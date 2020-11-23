@@ -1,0 +1,13 @@
+{
+	"authors": [
+		"Esther O'Keefe"
+	],
+	"copyright": "Copyright © 2020, Esther O'Keefe",
+	"dependencies": {
+		"glfw-d": "~>1.0.1",
+		"erupted": "~>2.1.9"
+	},
+	"description": "Rendering a triangle in D with Vulkan",
+	"license": "GPL-3.0",
+	"name": "dlangvulkantriangle"
+}

@@ -1,0 +1,15 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/dlangvulkantriangle
+dlangvulkantriangle.so
+dlangvulkantriangle.dylib
+dlangvulkantriangle.dll
+dlangvulkantriangle.a
+dlangvulkantriangle.lib
+dlangvulkantriangle-test-*
+*.exe
+*.o
+*.obj
+*.lst
