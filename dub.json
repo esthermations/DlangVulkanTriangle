@@ -9,5 +9,5 @@
 	},
 	"description": "Rendering a triangle in D with Vulkan",
 	"license": "GPL-3.0",
-	"name": "dlangvulkantriangle"
+	"name": "triangle"
 }
