@@ -268,7 +268,337 @@ void main() {
 
     // Images
     
+    uint numSwapchainImages;
     VkImage[] swapchainImages;
+
+    vkGetSwapchainImagesKHR(logicalDevice, swapchain, &numSwapchainImages, null);
+    swapchainImages.length = numSwapchainImages;
+    vkGetSwapchainImagesKHR(logicalDevice, swapchain, &numSwapchainImages, swapchainImages.ptr);
+
+    VkFormat swapchainImageFormat = surfaceFormat.format;
+    VkExtent2D swapchainExtent = extent;
+
+    // Image views
+
+    VkImageView[] swapchainImageViews;
+    swapchainImageViews.length = swapchainImages.length;
+
+    foreach(i, image; swapchainImages) {
+        VkImageViewCreateInfo createInfo = {
+            image      : image,
+            viewType   : VK_IMAGE_VIEW_TYPE_2D,
+            format     : swapchainImageFormat,
+            components : {
+                r : VK_COMPONENT_SWIZZLE_IDENTITY,
+                g : VK_COMPONENT_SWIZZLE_IDENTITY,
+                b : VK_COMPONENT_SWIZZLE_IDENTITY,
+                a : VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresourceRange : {
+                aspectMask     : VK_IMAGE_ASPECT_COLOR_BIT,
+                baseMipLevel   : 0,
+                levelCount     : 1,
+                baseArrayLayer : 0,
+                layerCount     : 1,
+            },
+        };
+
+        auto imageViewCreateResult = 
+            vkCreateImageView(logicalDevice, &createInfo, null, &swapchainImageViews[i]);
+        enforce(imageViewCreateResult == VK_SUCCESS, "Failed to create an image view.");
+    }
+
+    scope(exit) {
+        foreach (view; swapchainImageViews) {
+            vkDestroyImageView(logicalDevice, view, null);
+        }
+    }
+
+    // Set up the graphics pipeline
+
+    VkShaderModule vertModule = createShaderModule(logicalDevice, "./source/vert.spv"); 
+    VkShaderModule fragModule = createShaderModule(logicalDevice, "./source/frag.spv");
+    scope(exit) vkDestroyShaderModule(logicalDevice, vertModule, null);
+    scope(exit) vkDestroyShaderModule(logicalDevice, fragModule, null);
+
+    VkPipelineShaderStageCreateInfo vertStageCreateInfo = {
+        stage  : VK_SHADER_STAGE_VERTEX_BIT,
+        Module : vertModule,
+        pName  : "main",
+    };
+
+    VkPipelineShaderStageCreateInfo fragStageCreateInfo = {
+        stage  : VK_SHADER_STAGE_FRAGMENT_BIT,
+        Module : fragModule,
+        pName  : "main",
+    };
+
+    VkPipelineShaderStageCreateInfo[2] shaderStages = 
+        [vertStageCreateInfo, fragStageCreateInfo];
+
+    VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {
+        vertexBindingDescriptionCount   : 0,
+        pVertexBindingDescriptions      : null,
+        vertexAttributeDescriptionCount : 0,
+        pVertexAttributeDescriptions    : null,
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo = {
+        topology               : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        primitiveRestartEnable : VK_FALSE,
+    };
+
+    VkViewport viewport = {
+        x        : 0.0f,
+        y        : 0.0f,
+        width    : swapchainExtent.width,
+        height   : swapchainExtent.height,
+        minDepth : 0.0f,
+        maxDepth : 1.0f,
+    };
+
+    VkRect2D scissor = {
+        offset : {0, 0},
+        extent : swapchainExtent,
+    };
+
+    VkPipelineViewportStateCreateInfo viewportStateCreateInfo = {
+        viewportCount : 1,
+        pViewports    : &viewport,
+        scissorCount  : 1,
+        pScissors     : &scissor,
+    };
+
+    VkPipelineRasterizationStateCreateInfo rasterisationStateCreateInfo = {
+        depthClampEnable        : VK_FALSE,
+        rasterizerDiscardEnable : VK_FALSE,
+        polygonMode             : VK_POLYGON_MODE_FILL,
+        lineWidth               : 1.0f,
+        cullMode                : VK_CULL_MODE_BACK_BIT,
+        frontFace               : VK_FRONT_FACE_CLOCKWISE,
+        depthBiasEnable         : VK_FALSE,
+        depthBiasClamp          : 0.0f,
+    };
+
+    VkPipelineMultisampleStateCreateInfo multisampleStateCreateInfo = {
+        sampleShadingEnable : VK_FALSE,
+        rasterizationSamples : VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    VkPipelineColorBlendAttachmentState colourBlendAttachment = {
+        colorWriteMask : VK_COLOR_COMPONENT_R_BIT | 
+                         VK_COLOR_COMPONENT_G_BIT | 
+                         VK_COLOR_COMPONENT_B_BIT | 
+                         VK_COLOR_COMPONENT_A_BIT,
+        blendEnable    : VK_FALSE,
+    };
+
+    VkPipelineColorBlendStateCreateInfo colourBlendStateCreateInfo = {
+        logicOpEnable   : VK_FALSE,
+        attachmentCount : 1,
+        pAttachments    : &colourBlendAttachment,
+    };
+
+    // This is where uniforms would go
+    VkPipelineLayout pipelineLayout;
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo;
+
+    auto pipelineLayoutCreateResult = 
+        vkCreatePipelineLayout(logicalDevice, &pipelineLayoutCreateInfo, null, &pipelineLayout);
+    scope(exit) vkDestroyPipelineLayout(logicalDevice, pipelineLayout, null);
+
+    enforce(pipelineLayoutCreateResult == VK_SUCCESS, 
+            "Failed to create pipeline layout");
+
+    // Create render pass
+
+    VkAttachmentDescription colourAttachment = { 
+        format         : swapchainImageFormat,
+        samples        : VK_SAMPLE_COUNT_1_BIT,
+        loadOp         : VK_ATTACHMENT_LOAD_OP_CLEAR,
+        storeOp        : VK_ATTACHMENT_STORE_OP_STORE,
+        stencilLoadOp  : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        stencilStoreOp : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        initialLayout  : VK_IMAGE_LAYOUT_UNDEFINED,
+        finalLayout    : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+
+    VkAttachmentReference colourAttachmentReference = {
+        attachment : 0,
+        layout     : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    VkSubpassDescription subpass = {
+        pipelineBindPoint : VK_PIPELINE_BIND_POINT_GRAPHICS,
+        colorAttachmentCount : 1,
+        pColorAttachments : &colourAttachmentReference,
+    };
+
+    VkRenderPass renderPass;
+
+    VkSubpassDependency dependency = {
+        srcSubpass    : VK_SUBPASS_EXTERNAL,
+        dstSubpass    : 0,
+        srcStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        srcAccessMask : 0,
+        dstStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        dstAccessMask : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+
+    VkRenderPassCreateInfo renderPassCreateInfo = {
+        attachmentCount : 1,
+        pAttachments    : &colourAttachment,
+        subpassCount    : 1,
+        pSubpasses      : &subpass,
+        dependencyCount : 1,
+        pDependencies   : &dependency,
+    };
+
+    auto renderPassCreateResult = 
+        vkCreateRenderPass(logicalDevice, &renderPassCreateInfo, null, &renderPass);
+    scope(exit) vkDestroyRenderPass(logicalDevice, renderPass, null);
+
+    enforce(renderPassCreateResult == VK_SUCCESS, 
+            "Failed to create a render pass.");
+
+    VkGraphicsPipelineCreateInfo pipelineCreateInfo = {
+        stageCount : 2,
+        pStages    : shaderStages.ptr,
+        pVertexInputState   : &vertexInputCreateInfo,
+        pInputAssemblyState : &inputAssemblyCreateInfo,
+        pViewportState      : &viewportStateCreateInfo,
+        pRasterizationState : &rasterisationStateCreateInfo,
+        pMultisampleState   : &multisampleStateCreateInfo,
+        pDepthStencilState  : null,
+        pColorBlendState    : &colourBlendStateCreateInfo,
+        pDynamicState       : null,
+        layout              : pipelineLayout,
+        renderPass          : renderPass,
+        subpass             : 0,
+    };
+
+    VkPipeline graphicsPipeline;
+
+    auto pipelineCreateResult = 
+        vkCreateGraphicsPipelines(logicalDevice, VK_NULL_HANDLE, 1, 
+                                  &pipelineCreateInfo, null, &graphicsPipeline);
+
+    scope(exit) vkDestroyPipeline(logicalDevice, graphicsPipeline, null);
+
+    enforce(pipelineCreateResult == VK_SUCCESS, 
+            "Failed to create graphics pipeline.");
+
+    // Create framebuffers
+
+    VkFramebuffer[] swapchainFrameBuffers;
+    swapchainFrameBuffers.length = swapchainImageViews.length;
+
+    foreach (i, view; swapchainImageViews) {
+        VkImageView[1] attachments = [ view ];
+
+        VkFramebufferCreateInfo createInfo = {
+            renderPass : renderPass,
+            attachmentCount : 1,
+            pAttachments    : attachments.ptr,
+            width           : swapchainExtent.width,
+            height          : swapchainExtent.height,
+            layers          : 1,
+        };
+
+        auto result = 
+            vkCreateFramebuffer(logicalDevice, &createInfo, null, &swapchainFrameBuffers[i]);
+
+        enforce(result == VK_SUCCESS, "Failed to create a framebuffer.");
+    }
+
+    scope(exit) {
+        foreach (fb; swapchainFrameBuffers) {
+            vkDestroyFramebuffer(logicalDevice, fb, null);
+        }
+    }
+
+    // Command buffers
+
+    VkCommandPool commandPool;
+
+    VkCommandPoolCreateInfo commandPoolCreateInfo = {
+        queueFamilyIndex : queueFamilies.graphicsFamily.get,
+        flags            : 0,
+    };
+
+    auto createCommandPoolResult =
+        vkCreateCommandPool(logicalDevice, &commandPoolCreateInfo, null, &commandPool);
+    scope(exit) vkDestroyCommandPool(logicalDevice, commandPool, null);
+
+    enforce(createCommandPoolResult == VK_SUCCESS, 
+            "Failed to create command pool.");
+
+
+    VkCommandBuffer[] commandBuffers;
+    commandBuffers.length = swapchainFrameBuffers.length;
+
+    VkCommandBufferAllocateInfo commandBufferAllocateInfo = {
+        commandPool        : commandPool,
+        level              : VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        commandBufferCount : cast(uint) commandBuffers.length,
+    };
+
+    {
+        auto result = vkAllocateCommandBuffers(logicalDevice, 
+                                               &commandBufferAllocateInfo, 
+                                               commandBuffers.ptr);
+        enforce(result == VK_SUCCESS, "Failed to create Command Buffers");
+    }
+
+    // Record commands
+
+    VkClearValue clearColour = { 
+        color : { 
+            float32 : [0.0, 0.0, 0.0, 1.0] 
+        },
+    };
+
+    foreach (i, commandBuffer; commandBuffers) {
+        VkCommandBufferBeginInfo beginInfo;
+        auto beginResult = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+        enforce(beginResult == VK_SUCCESS, "Failed to begin command buffer");
+
+        // Start a render pass
+        VkRenderPassBeginInfo renderPassBeginInfo = {
+            renderPass  : renderPass,
+            framebuffer : swapchainFrameBuffers[i],
+            renderArea  : {
+                offset : {0, 0},
+                extent : swapchainExtent,
+            },
+            clearValueCount : 1,
+            pClearValues    : &clearColour,
+        };
+        
+        vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        vkCmdEndRenderPass(commandBuffer);
+
+        auto endResult = vkEndCommandBuffer(commandBuffer);
+        enforce(endResult == VK_SUCCESS, "Failed to end command buffer.");
+    }
+
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
+
+    VkSemaphoreCreateInfo imageAvailableSemaphoreCreateInfo;
+    VkSemaphoreCreateInfo renderFinishedSemaphoreCreateInfo;
+
+    auto createImageSemaphoreResult =
+        vkCreateSemaphore(logicalDevice, &imageAvailableSemaphoreCreateInfo, null, &imageAvailableSemaphore);
+    enforce(createImageSemaphoreResult  == VK_SUCCESS);
+    scope(exit) vkDestroySemaphore(logicalDevice, imageAvailableSemaphore, null);
+
+    auto createRenderSemaphoreResult =
+        vkCreateSemaphore(logicalDevice, &renderFinishedSemaphoreCreateInfo, null, &renderFinishedSemaphore);
+    enforce(createRenderSemaphoreResult == VK_SUCCESS);
+    scope(exit) vkDestroySemaphore(logicalDevice, renderFinishedSemaphore, null);
 
     /*
     ---------------------------------------------------------------------------
@@ -278,7 +608,41 @@ void main() {
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+
+        uint imageIndex;
+        vkAcquireNextImageKHR(logicalDevice, swapchain, ulong.max, 
+                              imageAvailableSemaphore, VK_NULL_HANDLE, 
+                              &imageIndex);
+
+        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+        VkSubmitInfo submitInfo = {
+            waitSemaphoreCount   : 1,
+            pWaitSemaphores      : &imageAvailableSemaphore,
+            pWaitDstStageMask    : &waitStage,
+            commandBufferCount   : 1,
+            pCommandBuffers      : &commandBuffers[imageIndex],
+            signalSemaphoreCount : 1,
+            pSignalSemaphores    : &renderFinishedSemaphore,
+        };
+
+        auto submitResult = 
+            vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        enforce(submitResult == VK_SUCCESS);
+
+        VkPresentInfoKHR presentInfo = {
+            waitSemaphoreCount : 1,
+            pWaitSemaphores    : &renderFinishedSemaphore,
+            swapchainCount     : 1,
+            pSwapchains        : &swapchain, 
+            pImageIndices      : &imageIndex,
+            pResults           : null,
+        };
+
+        vkQueuePresentKHR(presentQueue, &presentInfo);
     }
+
+    vkDeviceWaitIdle(logicalDevice);
 }
 
 /*
@@ -523,3 +887,30 @@ VkExtent2D selectExtent(   GLFWwindow              *window,
         return ret;
     }
 }
+
+VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
+    import std.stdio : File;
+    auto file = File(path, "rb");
+    auto data = file.rawRead(new uint[file.size / uint.sizeof]);
+
+    debug {
+        import std.digest.sha;
+        auto hash = sha256Of(data);
+        writeln("Shader compilation: ", path, " has sha256 of ", 
+                toHexString(hash));
+    }
+
+    VkShaderModuleCreateInfo createInfo = {
+        codeSize : data.length * uint.sizeof,
+        pCode    : data.ptr,
+    };
+
+    VkShaderModule ret;
+    auto createResult = 
+        vkCreateShaderModule(logicalDevice, &createInfo, null, &ret);
+    enforce(createResult == VK_SUCCESS, "Failed to create shader module");
+
+    return ret;
+}
+
+
