@@ -4,24 +4,10 @@ import erupted;
 import glfw3.api;
 
 import util;
+import globals;
 
 /// How many frames in advance we should allow Vulkan to render.
 enum MAX_FRAMES_IN_FLIGHT = 2;
-
-
-struct Frame {
-    struct Semaphores {
-        VkSemaphore imageIsAvailable;
-        VkSemaphore renderIsFinished;
-    }
-
-    Semaphores semaphores;
-}
-
-struct Globals {
-    static ulong currentFrame; /// Latest frame? This might be named better.
-    static Frame[MAX_FRAMES_IN_FLIGHT] frames;
-}
 
 void main() {
 
@@ -31,10 +17,19 @@ void main() {
     enforce(glfwVulkanSupported(), "No Vulkan support from GLFW!");
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    auto window = glfwCreateWindow(800, 600, "Vulkan", null, null);
+    auto window = glfwCreateWindow(800, 600, "Carl", null, null);
     scope (exit) glfwDestroyWindow(window);
+
+    extern (C) 
+    void fbResizeCallback(GLFWwindow *window, int width, int height) {
+        Globals.framebufferWidth      = width;
+        Globals.framebufferHeight     = height;
+        Globals.framebufferWasResized = true;
+    }
+
+    glfwSetFramebufferSizeCallback(window, &fbResizeCallback);
 
     /*
     ---------------------------------------------------------------------------
@@ -198,95 +193,61 @@ void main() {
     vkGetDeviceQueue(logicalDevice, queueFamilies.graphics.get, 0, &graphicsQueue);
     vkGetDeviceQueue(logicalDevice, queueFamilies.present.get, 0, &presentQueue);
 
-    // Create swapchain
+    // Create pipeline layout. This is where uniforms would go.
 
-    VkSwapchainKHR swapchain = createSwapchain(logicalDevice, physicalDevice, surface, window);
+    VkPipelineLayout pipelineLayout;
+
+    {
+        VkPipelineLayoutCreateInfo createInfo;
+        auto errors = vkCreatePipelineLayout(
+            logicalDevice, &createInfo, null, &pipelineLayout);
+        enforce(!errors, "Failed to create pipeline layout");
+    }
+
+    // Create command pool
+
+    VkCommandPool commandPool;
+
+    {
+        VkCommandPoolCreateInfo createInfo = {
+            queueFamilyIndex : queueFamilies.graphics.get,
+            flags            : 0,
+        };
+
+        auto errors = logicalDevice.vkCreateCommandPool(
+            &createInfo, null, &commandPool);
+        enforce(!errors, "Failed to create command pool.");
+    }
+
+    // Create swapchain
 
     auto surfaceFormat = physicalDevice.getSurfaceFormat(surface);
     auto surfaceExtent = physicalDevice.getSurfaceExtent(surface, window);
 
-    // Create image views
+    SwapchainWithDependents swapchain;
 
-    VkImageView[] imageViews = createImageViews(
-        logicalDevice, swapchain, window, swapchainImageFormat, swapchainExtent);
-
-    // This is where uniforms would go
-    VkPipelineLayout pipelineLayout;
-    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo;
-
-    auto pipelineLayoutCreateResult = 
-        vkCreatePipelineLayout(logicalDevice, &pipelineLayoutCreateInfo, null, &pipelineLayout);
-
-    enforce(pipelineLayoutCreateResult == VK_SUCCESS, 
-            "Failed to create pipeline layout");
-
-
-    // Create render pass
-
-    auto renderPass = logicalDevice.createRenderPass(surfaceFormat);
-
-    // Create graphics pipeline
-
-    auto graphicsPipeline = createGraphicsPipeline(logicalDevice, swapchainExtent, renderPass);
-
-    // Create framebuffers
-
-    auto framebuffers = createFramebuffers(logicalDevice, imageViews, renderPass, swapchainExtent);
-
-    // Command buffers
-
-    VkCommandPool commandPool;
-
-    VkCommandPoolCreateInfo commandPoolCreateInfo = {
-        queueFamilyIndex : queueFamilies.graphics.get,
-        flags            : 0,
-    };
-
-    auto createCommandPoolResult = vkCreateCommandPool(
-        logicalDevice, &commandPoolCreateInfo, null, &commandPool);
-
-    enforce(createCommandPoolResult == VK_SUCCESS, 
-            "Failed to create command pool.");
+    swapchain.swapchain  = logicalDevice.createSwapchain(
+        physicalDevice, surface, window);
+    swapchain.imageViews = logicalDevice.createImageViews(
+        physicalDevice, surface, swapchain.swapchain, window);
+    swapchain.renderPass = logicalDevice.createRenderPass(
+        surfaceFormat);
+    swapchain.pipeline   = logicalDevice.createGraphicsPipeline(
+        pipelineLayout, surfaceExtent, swapchain.renderPass);
+    swapchain.framebuffers = logicalDevice.createFramebuffers(
+        swapchain.imageViews, swapchain.renderPass, surfaceExtent);
+    swapchain.commandBuffers = logicalDevice.createCommandBuffers(
+        swapchain.framebuffers, commandPool);
 
     // Record commands
 
-    VkClearValue clearColour = { 
-        color : { 
-            float32 : [0.0, 0.0, 0.0, 1.0] 
-        },
-    };
-
-    foreach (i, commandBuffer; commandBuffers) {
-        VkCommandBufferBeginInfo beginInfo;
-        auto beginResult = vkBeginCommandBuffer(commandBuffer, &beginInfo);
-        enforce(beginResult == VK_SUCCESS, "Failed to begin command buffer");
-
-        // Start a render pass
-        VkRenderPassBeginInfo info = {
-            renderPass  : renderPass,
-            framebuffer : swapchainFrameBuffers[i],
-            renderArea  : {
-                offset : {0, 0},
-                extent : swapchainExtent,
-            },
-            clearValueCount : 1,
-            pClearValues    : &clearColour,
-        };
-        
-        commandBuffer.vkCmdBeginRenderPass(&info, VK_SUBPASS_CONTENTS_INLINE);
-        commandBuffer.vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-        commandBuffer.vkCmdDraw(3, 1, 0, 0);
-        commandBuffer.vkCmdEndRenderPass();
-
-        auto endResult = vkEndCommandBuffer(commandBuffer);
-        enforce(endResult == VK_SUCCESS, "Failed to end command buffer.");
-    }
+    issueRenderCommands(swapchain, surfaceExtent);
 
     VkSemaphore[MAX_FRAMES_IN_FLIGHT] imageAvailableSemaphores;
     VkSemaphore[MAX_FRAMES_IN_FLIGHT] renderFinishedSemaphores;
     VkFence[MAX_FRAMES_IN_FLIGHT]     inFlightFences;
     VkFence[]                         imagesInFlightFences;
-    imagesInFlightFences.length = swapchainImageViews.length;
+    imagesInFlightFences.length = swapchain.imageViews.length;
 
     foreach (i; 0 .. MAX_FRAMES_IN_FLIGHT) {
         VkSemaphoreCreateInfo imageAvailableSemaphoreCreateInfo;
@@ -319,17 +280,27 @@ void main() {
     ---------------------------------------------------------------------------
     */
 
+    uint frameNumber = 0;
+
     while (!glfwWindowShouldClose(window)) {
+        ++frameNumber;
         glfwPollEvents();
 
         vkWaitForFences(logicalDevice, 1, &inFlightFences[Globals.currentFrame], VK_TRUE, ulong.max);
 
         uint imageIndex;
-        vkAcquireNextImageKHR(logicalDevice, swapchain, ulong.max, 
+        vkAcquireNextImageKHR(logicalDevice, swapchain.swapchain, ulong.max, 
                               imageAvailableSemaphores[Globals.currentFrame], 
                               VK_NULL_HANDLE, &imageIndex);
 
         if (imagesInFlightFences[imageIndex] != VK_NULL_HANDLE) {
+            auto fenceStatus = logicalDevice.vkGetFenceStatus(
+                imagesInFlightFences[imageIndex]);
+
+            if (fenceStatus == VK_NOT_READY) {
+                debug writeln("Waiting for fence. (Frame ", frameNumber, ")");
+            }
+            
             vkWaitForFences(logicalDevice, 1, &imagesInFlightFences[imageIndex], 
                             VK_TRUE, ulong.max);
         }
@@ -347,7 +318,7 @@ void main() {
             pWaitSemaphores      : waitSemaphores.ptr,
             pWaitDstStageMask    : waitStages.ptr,
             commandBufferCount   : 1,
-            pCommandBuffers      : &commandBuffers[imageIndex],
+            pCommandBuffers      : &swapchain.commandBuffers[imageIndex],
             signalSemaphoreCount : 1,
             pSignalSemaphores    : signalSemaphores.ptr,
         };
@@ -356,9 +327,10 @@ void main() {
 
         auto submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, 
                                           inFlightFences[Globals.currentFrame]);
+                                        
         enforce(submitResult == VK_SUCCESS);
 
-        VkSwapchainKHR[] swapchains = [swapchain];
+        VkSwapchainKHR[] swapchains = [swapchain.swapchain];
 
         VkPresentInfoKHR presentInfo = {
             waitSemaphoreCount : 1,
@@ -369,14 +341,27 @@ void main() {
             pResults           : null,
         };
 
-        vkQueuePresentKHR(presentQueue, &presentInfo);
+        auto queuePresentResult = vkQueuePresentKHR(presentQueue, &presentInfo);
+
+        {
+            if (queuePresentResult == VK_ERROR_OUT_OF_DATE_KHR || 
+                queuePresentResult == VK_SUBOPTIMAL_KHR || 
+                Globals.framebufferWasResized) 
+            {
+                swapchain = recreateSwapchain(
+                    logicalDevice, 
+                    physicalDevice, 
+                    surface, 
+                    window, 
+                    pipelineLayout, 
+                    commandPool, 
+                    swapchain
+                );
+            }
+        }
 
         Globals.currentFrame = 
             (Globals.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-
-        // HACK: avoiding sync issues by just waiting until the entire device is
-        // idle before proceeding to the next frame.
-        //vkQueueWaitIdle(presentQueue); 
     }
 
     vkDeviceWaitIdle(logicalDevice);
@@ -385,14 +370,9 @@ void main() {
                   messenger,
                   surface, 
                   logicalDevice, 
-                  swapchain, 
-                  swapchainImageViews, 
-                  swapchainFrameBuffers, 
-                  commandBuffers, 
-                  commandPool, 
-                  renderPass, 
-                  graphicsPipeline, 
                   pipelineLayout, 
+                  commandPool,
+                  swapchain,
                   imageAvailableSemaphores ~ renderFinishedSemaphores, 
                   inFlightFences);
 }

@@ -6,6 +6,8 @@ import std.typecons : Nullable;
 import glfw3.api;
 import erupted;
 
+import globals;
+
 /**
     Utility functions for the game engine, currently mostly Vulkan-related.
 */
@@ -111,7 +113,7 @@ VkImageView[] createImageViews(VkDevice          logicalDevice,
     vkGetSwapchainImagesKHR(logicalDevice, swapchain, &numImages, images.ptr);
 
     auto support = querySwapchainSupport(physicalDevice, surface);
-    auto swapchainImageFormat = selectSurfaceFormat(support.formats);
+    auto swapchainImageFormat = selectSurfaceFormat(support.formats).format;
     auto swapchainExtent      = selectExtent(window, support.capabilities);
 
     // Image views
@@ -147,119 +149,84 @@ VkImageView[] createImageViews(VkDevice          logicalDevice,
     return ret;
 }
 
+
+
 /// Clean up a swapchain and all its dependent items. There are a lot of them.
-void cleanupSwapchain(VkDevice           logicalDevice,
-                      VkFramebuffer    []swapchainFramebuffers,
-                      VkCommandPool      commandPool,
-                      VkCommandBuffer  []commandBuffers,
-                      VkPipeline         graphicsPipeline,
-                      VkPipelineLayout   pipelineLayout,
-                      VkRenderPass       renderPass,
-                      VkImageView      []swapchainImageViews, 
-                      VkSwapchainKHR     swapchain) 
+/// The commandPool and pipelineLayout are NOT destroyed.
+void cleanupSwapchain(VkDevice                logicalDevice,
+                      VkPipelineLayout        pipelineLayout,
+                      VkCommandPool           commandPool,
+                      SwapchainWithDependents swapchain) 
 {
-    foreach (framebuffer; swapchainFramebuffers) {
-        vkDestroyFramebuffer(logicalDevice, framebuffer, null);
+    foreach (framebuffer; swapchain.framebuffers) {
+        logicalDevice.vkDestroyFramebuffer(framebuffer, null);
     }
 
-    vkFreeCommandBuffers(logicalDevice, commandPool, 
-                         cast(uint) commandBuffers.length, commandBuffers.ptr);
+    logicalDevice.vkFreeCommandBuffers(
+        commandPool, 
+        cast(uint) swapchain.commandBuffers.length, 
+        swapchain.commandBuffers.ptr
+    );
 
-    vkDestroyPipeline(logicalDevice, graphicsPipeline, null);
-    vkDestroyPipelineLayout(logicalDevice, pipelineLayout, null);
-    vkDestroyRenderPass(logicalDevice, renderPass, null);
+    logicalDevice.vkDestroyPipeline(swapchain.pipeline, null);
+    logicalDevice.vkDestroyRenderPass(swapchain.renderPass, null);
 
-    foreach (view; swapchainImageViews) {
-        vkDestroyImageView(logicalDevice, view, null);
+    foreach (view; swapchain.imageViews) {
+        logicalDevice.vkDestroyImageView(view, null);
     }
 
-    vkDestroySwapchainKHR(logicalDevice, swapchain, null);
+    logicalDevice.vkDestroySwapchainKHR(swapchain.swapchain, null);
 }
-
-/// Clean up all Vulkan state, ready to shut down the application. Or recreate
-/// the entire Vulkan context. Or whatever.
-void vulkanCleanup(VkInstance                 instance,
-                   VkDebugUtilsMessengerEXT   messenger,
-                   VkSurfaceKHR               surface,
-                   VkDevice                   logicalDevice,
-                   VkSwapchainKHR             swapchain,
-                   VkImageView              []swapchainImageViews,
-                   VkFramebuffer            []swapchainFramebuffers,
-                   VkCommandBuffer          []commandBuffers,
-                   VkCommandPool              commandPool,
-                   VkRenderPass               renderPass,
-                   VkPipeline                 graphicsPipeline,
-                   VkPipelineLayout           pipelineLayout,
-                   VkSemaphore              []allSemaphores,
-                   VkFence                  []allFences) 
-{
-    cleanupSwapchain(logicalDevice, 
-                     swapchainFramebuffers, 
-                     commandPool, 
-                     commandBuffers, 
-                     graphicsPipeline, 
-                     pipelineLayout, 
-                     renderPass, 
-                     swapchainImageViews, 
-                     swapchain);
-
-    foreach (semaphore; allSemaphores) {
-        vkDestroySemaphore(logicalDevice, semaphore, null);
-    }
-
-    foreach (fence; allFences) {
-        vkDestroyFence(logicalDevice, fence, null);
-    }
-
-    vkDestroyCommandPool(logicalDevice, commandPool, null);
-    vkDestroyDevice(logicalDevice, null);
-
-    vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
-
-    vkDestroySurfaceKHR(instance, surface, null);
-    vkDestroyInstance(instance, null);
-}
-
 /*
 -------------------------------------------------------------------------------
 --  recreateSwapchain
 -------------------------------------------------------------------------------
 */
 
-VkSwapchainKHR recreateSwapchain(VkDevice           logicalDevice,
-                                 VkPhysicalDevice   physicalDevice, 
-                                 VkSurfaceKHR       surface, 
-                                 GLFWwindow        *window,                        
-                                 VkFramebuffer    []swapchainFramebuffers,                        
-                                 VkCommandPool      commandPool,                        
-                                 VkCommandBuffer  []commandBuffers,                        
-                                 VkPipeline         graphicsPipeline,                        
-                                 VkPipelineLayout   pipelineLayout,                        
-                                 VkRenderPass       renderPass,                        
-                                 VkImageView      []swapchainImageViews,                         
-                                 VkSwapchainKHR     swapchain) 
+struct SwapchainWithDependents {
+    VkSwapchainKHR    swapchain;
+    VkImageView[]     imageViews;
+    VkRenderPass      renderPass;
+    VkPipeline        pipeline;
+    VkFramebuffer[]   framebuffers;
+    VkCommandBuffer[] commandBuffers;
+}
+
+SwapchainWithDependents 
+recreateSwapchain(VkDevice                 logicalDevice,
+                  VkPhysicalDevice         physicalDevice, 
+                  VkSurfaceKHR             surface, 
+                  GLFWwindow              *window,                        
+                  VkPipelineLayout         pipelineLayout,                        
+                  VkCommandPool            commandPool,
+                  SwapchainWithDependents  oldSwapchain) 
 {
+    // NOTE: We re-use the old swapchain's command pool. 
+    // cleanupSwapchain() doesn't free it.
+    SwapchainWithDependents ret;
+
     vkDeviceWaitIdle(logicalDevice);
 
-    cleanupSwapchain(logicalDevice, 
-                     swapchainFramebuffers, 
-                     commandPool,  // FIXME: I want to hang on to the command pool in this case.
-                     commandBuffers, 
-                     graphicsPipeline, 
-                     pipelineLayout, 
-                     renderPass, 
-                     swapchainImageViews, 
-                     swapchain);
+    cleanupSwapchain(logicalDevice, pipelineLayout, commandPool, oldSwapchain);
 
     const format = physicalDevice.getSurfaceFormat(surface);
     const extent = physicalDevice.getSurfaceExtent(surface, window);
 
-    auto newSwapchain      = logicalDevice.createSwapchain(physicalDevice, surface, window);
-    auto newImageViews     = logicalDevice.createImageViews(physicalDevice, surface, newSwapchain, window);
-    auto newRenderPass     = logicalDevice.createRenderPass(format);
-    auto newPipeline       = logicalDevice.createGraphicsPipeline(extent, newRenderPass);
-    auto newFramebuffers   = logicalDevice.createFramebuffers(newImageViews, newRenderPass, extent);
-    auto newCommandBuffers = logicalDevice.createCommandBuffers(newFramebuffers, commandPool);
+    ret.swapchain      = logicalDevice.createSwapchain(physicalDevice, surface, window);
+    ret.imageViews     = logicalDevice.createImageViews(physicalDevice, surface, ret.swapchain, window);
+    ret.renderPass     = logicalDevice.createRenderPass(format);
+
+    // FIXME: This right here re-compiles the shaders. That really seems
+    // unnecessary, since the shaders will never change on disk while the
+    // program is running.
+    ret.pipeline       = logicalDevice.createGraphicsPipeline(pipelineLayout, extent, ret.renderPass);
+
+    ret.framebuffers   = logicalDevice.createFramebuffers(ret.imageViews, ret.renderPass, extent);
+    ret.commandBuffers = logicalDevice.createCommandBuffers(ret.framebuffers, commandPool);
+
+    issueRenderCommands(ret, extent);
+
+    return ret;
 }
 
 /// Create a command buffer for each given framebuffer.
@@ -267,17 +234,18 @@ VkCommandBuffer[] createCommandBuffers(VkDevice        logicalDevice,
                                        VkFramebuffer[] framebuffers, 
                                        VkCommandPool   commandPool) 
 {
+    immutable numCommandBuffers = framebuffers.length;
     VkCommandBuffer[] ret;
-    ret.length = framebuffers.length;
+    ret.length = numCommandBuffers;
 
-    VkCommandBufferAllocateInfo commandBufferAllocateInfo = {
+    VkCommandBufferAllocateInfo allocateInfo = {
         commandPool        : commandPool,
         level              : VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        commandBufferCount : cast(uint) commandBuffers.length,
+        commandBufferCount : cast(uint) numCommandBuffers,
     };
 
-    auto errors = logicalDevice.vkAllocateCommandBuffers(
-        &commandBufferAllocateInfo, ret.ptr);
+    auto errors = 
+        logicalDevice.vkAllocateCommandBuffers(&allocateInfo, ret.ptr);
     enforce(!errors, "Failed to create Command Buffers");
 
     return ret;
@@ -320,12 +288,13 @@ VkExtent2D getSurfaceExtent(VkPhysicalDevice  physicalDevice,
     return selectExtent(window, support.capabilities);
 }
 
-VkPipeline createGraphicsPipeline(VkDevice     logicalDevice,                                    
-                                  VkExtent2D   swapchainExtent,
-                                  VkRenderPass renderPass)
+VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
+                                  VkPipelineLayout pipelineLayout,
+                                  VkExtent2D       swapchainExtent,
+                                  VkRenderPass     renderPass)
 {
     VkShaderModule vertModule = createShaderModule(logicalDevice, "./source/vert.spv"); 
-    VkShaderModule fragModule = createShaderModule(logicalDevice, "./source.frag.spv");
+    VkShaderModule fragModule = createShaderModule(logicalDevice, "./source/frag.spv");
 
     VkPipelineShaderStageCreateInfo vertStageCreateInfo = {
         stage  : VK_SHADER_STAGE_VERTEX_BIT,
@@ -433,12 +402,12 @@ VkPipeline createGraphicsPipeline(VkDevice     logicalDevice,
     return ret;
 }
 
-
+/// FIXME this should probably return a VkSurfaceFormatKHR.
 VkFormat getSurfaceFormat(VkPhysicalDevice physicalDevice, 
                           VkSurfaceKHR     surface) 
 {
     auto support = querySwapchainSupport(physicalDevice, surface);
-    return selectSurfaceFormat(support.formats);
+    return selectSurfaceFormat(support.formats).format;
 }
 
 VkRenderPass createRenderPass(VkDevice logicalDevice,
@@ -552,7 +521,7 @@ QueueFamilies selectQueueFamilies(VkPhysicalDevice physicalDevice,
         }
 
         if (ret.isComplete) {
-            debug writeln("Using queues ", ret);
+            //debug writeln("Using queues ", ret);
             return ret;
         }
     }
@@ -730,7 +699,6 @@ VkSurfaceFormatKHR selectSurfaceFormat(in VkSurfaceFormatKHR[] formats)
         }
     }
 
-    debug writeln("Couldn't find an ideal format, just using the first one.");
     return formats[0];
 }
 
@@ -795,12 +763,12 @@ VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
     auto file = File(path, "rb");
     auto data = file.rawRead(new uint[file.size / uint.sizeof]);
 
-    debug {
-        import std.digest.sha;
-        auto hash = sha256Of(data);
-        writeln("Shader compilation: ", path, " has sha256 of ", 
-                toHexString(hash));
-    }
+    //debug {
+    //    import std.digest.sha;
+    //    auto hash = sha256Of(data);
+    //    writeln("Shader compilation: ", path, " has sha256 of ", 
+    //            toHexString(hash));
+    //}
 
     VkShaderModuleCreateInfo createInfo = {
         codeSize : data.length * uint.sizeof,
@@ -813,5 +781,69 @@ VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
     enforce(createResult == VK_SUCCESS, "Failed to create shader module");
 
     return ret;
+}
+
+void issueRenderCommands(ref SwapchainWithDependents swapchain,
+                         in  VkExtent2D surfaceExtent)
+{
+    // Issue commands to the swapchain command buffers
+
+    foreach (i, commandBuffer; swapchain.commandBuffers) {
+        VkCommandBufferBeginInfo beginInfo;
+        auto beginErrors = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+        enforce(!beginErrors, "Failed to begin command buffer");
+
+        // Start a render pass
+        VkRenderPassBeginInfo info = {
+            renderPass  : swapchain.renderPass,
+            framebuffer : swapchain.framebuffers[i],
+            renderArea  : {
+                offset : {0, 0},
+                extent : surfaceExtent,
+            },
+            clearValueCount : 1,
+            pClearValues    : &Globals.clearColour,
+        };
+        
+        commandBuffer.vkCmdBeginRenderPass(&info, VK_SUBPASS_CONTENTS_INLINE);
+        commandBuffer.vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, swapchain.pipeline);
+        commandBuffer.vkCmdDraw(3, 1, 0, 0);
+        commandBuffer.vkCmdEndRenderPass();
+
+        auto endErrors = vkEndCommandBuffer(commandBuffer);
+        enforce(!endErrors, "Failed to end command buffer.");
+    }
+}
+
+/// Clean up all Vulkan state, ready to shut down the application. Or recreate
+/// the entire Vulkan context. Or whatever.
+void vulkanCleanup(VkInstance                 instance,
+                   VkDebugUtilsMessengerEXT   messenger,
+                   VkSurfaceKHR               surface,
+                   VkDevice                   logicalDevice,
+                   VkPipelineLayout           pipelineLayout,
+                   VkCommandPool              commandPool,
+                   SwapchainWithDependents    swapchain,
+                   VkSemaphore              []allSemaphores,
+                   VkFence                  []allFences) 
+{
+    cleanupSwapchain(logicalDevice, pipelineLayout, commandPool, swapchain);
+    vkDestroyCommandPool(logicalDevice, commandPool, null);
+    vkDestroyPipelineLayout(logicalDevice, pipelineLayout, null);
+
+    foreach (semaphore; allSemaphores) {
+        vkDestroySemaphore(logicalDevice, semaphore, null);
+    }
+
+    foreach (fence; allFences) {
+        vkDestroyFence(logicalDevice, fence, null);
+    }
+
+    vkDestroyDevice(logicalDevice, null);
+
+    vkDestroyDebugUtilsMessengerEXT(instance, messenger, null);
+
+    vkDestroySurfaceKHR(instance, surface, null);
+    vkDestroyInstance(instance, null);
 }
 
