@@ -149,8 +149,6 @@ VkImageView[] createImageViews(VkDevice          logicalDevice,
     return ret;
 }
 
-
-
 /// Clean up a swapchain and all its dependent items. There are a lot of them.
 /// The commandPool and pipelineLayout are NOT destroyed.
 void cleanupSwapchain(VkDevice                logicalDevice,
@@ -171,6 +169,13 @@ void cleanupSwapchain(VkDevice                logicalDevice,
     logicalDevice.vkDestroyPipeline(swapchain.pipeline, null);
     logicalDevice.vkDestroyRenderPass(swapchain.renderPass, null);
 
+    foreach (buf; swapchain.uniformBuffers) {
+        vkDestroyBuffer(logicalDevice, buf.buffer, null);
+        vkFreeMemory(logicalDevice, buf.memory, null);
+    }
+
+    vkDestroyDescriptorPool(logicalDevice, swapchain.descriptorPool, null);
+
     foreach (view; swapchain.imageViews) {
         logicalDevice.vkDestroyImageView(view, null);
     }
@@ -187,6 +192,9 @@ struct SwapchainWithDependents {
     VkSwapchainKHR    swapchain;
     VkImageView[]     imageViews;
     VkRenderPass      renderPass;
+    VkDescriptorPool  descriptorPool;
+    VkDescriptorSet[] descriptorSets;
+    Buffer[]          uniformBuffers;
     VkPipeline        pipeline;
     VkFramebuffer[]   framebuffers;
     VkCommandBuffer[] commandBuffers;
@@ -197,7 +205,9 @@ recreateSwapchain(VkDevice                 logicalDevice,
                   VkPhysicalDevice         physicalDevice, 
                   VkSurfaceKHR             surface, 
                   GLFWwindow              *window,                        
-                  VkPipelineLayout         pipelineLayout,                        
+                  VkBuffer                 vertexBuffer,
+                  VkPipelineLayout         pipelineLayout,
+                  VkDescriptorSetLayout    descriptorSetLayout,
                   VkCommandPool            commandPool,
                   SwapchainWithDependents  oldSwapchain) 
 {
@@ -215,6 +225,9 @@ recreateSwapchain(VkDevice                 logicalDevice,
     ret.swapchain      = logicalDevice.createSwapchain(physicalDevice, surface, window);
     ret.imageViews     = logicalDevice.createImageViews(physicalDevice, surface, ret.swapchain, window);
     ret.renderPass     = logicalDevice.createRenderPass(format);
+    ret.descriptorPool = logicalDevice.createDescriptorPool();
+    ret.descriptorSets = createDescriptorSets(logicalDevice, ret.descriptorPool, descriptorSetLayout, oldSwapchain.uniformBuffers);
+    ret.uniformBuffers = createUniformBuffers(logicalDevice, physicalDevice, ret.imageViews.length);
 
     // FIXME: This right here re-compiles the shaders. That really seems
     // unnecessary, since the shaders will never change on disk while the
@@ -224,7 +237,7 @@ recreateSwapchain(VkDevice                 logicalDevice,
     ret.framebuffers   = logicalDevice.createFramebuffers(ret.imageViews, ret.renderPass, extent);
     ret.commandBuffers = logicalDevice.createCommandBuffers(ret.framebuffers, commandPool);
 
-    issueRenderCommands(ret, extent);
+    issueRenderCommands(ret, extent, pipelineLayout, ret.descriptorSets, vertexBuffer);
 
     return ret;
 }
@@ -288,6 +301,9 @@ VkExtent2D getSurfaceExtent(VkPhysicalDevice  physicalDevice,
     return selectExtent(window, support.capabilities);
 }
 
+/// Set up the graphics pipeline for our application. There are a lot of
+/// hardcoded properties about our pipeline in this function -- it's not nearly
+/// as agnostic as it may appear.
 VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
                                   VkPipelineLayout pipelineLayout,
                                   VkExtent2D       swapchainExtent,
@@ -308,14 +324,14 @@ VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
         pName  : "main",
     };
 
-    VkPipelineShaderStageCreateInfo[2] shaderStages = 
-        [vertStageCreateInfo, fragStageCreateInfo];
+    auto bindingDescription    = Vertex.getBindingDescription;
+    auto attributeDescriptions = Vertex.getAttributeDescription;
 
     VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {
-        vertexBindingDescriptionCount   : 0,
-        pVertexBindingDescriptions      : null,
-        vertexAttributeDescriptionCount : 0,
-        pVertexAttributeDescriptions    : null,
+        vertexBindingDescriptionCount   : 1,
+        pVertexBindingDescriptions      : &bindingDescription,
+        vertexAttributeDescriptionCount : cast(uint) attributeDescriptions.length,
+        pVertexAttributeDescriptions    : attributeDescriptions.ptr,
     };
 
     VkPipelineInputAssemblyStateCreateInfo inputAssemblyCreateInfo = {
@@ -373,6 +389,9 @@ VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
         attachmentCount : 1,
         pAttachments    : &colourBlendAttachment,
     };
+
+    VkPipelineShaderStageCreateInfo[2] shaderStages = 
+        [vertStageCreateInfo, fragStageCreateInfo];
 
     VkGraphicsPipelineCreateInfo createInfo = {
         stageCount          : 2,
@@ -784,7 +803,10 @@ VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
 }
 
 void issueRenderCommands(ref SwapchainWithDependents swapchain,
-                         in  VkExtent2D surfaceExtent)
+                         in  VkExtent2D              surfaceExtent,
+                             VkPipelineLayout        pipelineLayout,
+                             VkDescriptorSet[]       descriptorSets,
+                             VkBuffer                vertexBuffer)
 {
     // Issue commands to the swapchain command buffers
 
@@ -804,9 +826,14 @@ void issueRenderCommands(ref SwapchainWithDependents swapchain,
             clearValueCount : 1,
             pClearValues    : &Globals.clearColour,
         };
+
+        VkBuffer[]     buffers = [vertexBuffer];
+        VkDeviceSize[] offsets = [0];
         
         commandBuffer.vkCmdBeginRenderPass(&info, VK_SUBPASS_CONTENTS_INLINE);
         commandBuffer.vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, swapchain.pipeline);
+        commandBuffer.vkCmdBindVertexBuffers(0, 1, buffers.ptr, offsets.ptr);
+        commandBuffer.vkCmdBindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 0, null);
         commandBuffer.vkCmdDraw(3, 1, 0, 0);
         commandBuffer.vkCmdEndRenderPass();
 
@@ -815,13 +842,190 @@ void issueRenderCommands(ref SwapchainWithDependents swapchain,
     }
 }
 
+struct Buffer {
+    VkBuffer       buffer;
+    VkDeviceMemory memory;
+    ulong          size;
+}
+
+Buffer createBuffer(VkDevice              logicalDevice,
+                    VkPhysicalDevice      physicalDevice,
+                    ulong                 size, 
+                    VkBufferUsageFlags    bufferUsage, 
+                    VkMemoryPropertyFlags memoryProperties)
+{
+    Buffer ret;
+    ret.size = size;
+
+    // Create ret.buffer
+
+    VkBufferCreateInfo createInfo = {
+        size        : size,
+        usage       : bufferUsage,
+        sharingMode : VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    auto bufferCreateErrors = 
+        vkCreateBuffer(logicalDevice, &createInfo, null, &ret.buffer);
+    enforce(!bufferCreateErrors, "Failed to create buffer!");
+
+    // Create ret.memory
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(logicalDevice, ret.buffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo = {
+        allocationSize  : memRequirements.size,
+        memoryTypeIndex : findMemoryType(physicalDevice, 
+                                         memRequirements.memoryTypeBits, 
+                                         memoryProperties),
+    };
+
+    auto bufferAllocErrors = 
+        vkAllocateMemory(logicalDevice, &allocInfo, null, &ret.memory);
+    enforce(!bufferAllocErrors, "Failed to allocate buffer!");
+
+
+    auto bindErrors = vkBindBufferMemory(logicalDevice, ret.buffer, ret.memory, 0);
+    enforce(!bindErrors, "Failed to bind buffer");
+
+    debug writeln("Returning buffer ", ret);
+    return ret;
+}
+
+   
+uint findMemoryType(VkPhysicalDevice physicalDevice, 
+                    uint typeFilter, 
+                    VkMemoryPropertyFlags requestedProperties) 
+{
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+    foreach (uint i; 0 .. memProperties.memoryTypeCount) {
+        immutable matchesFilter = typeFilter & (1 << i);
+        immutable allPropertiesAvailable = 
+            ( memProperties.memoryTypes[i].propertyFlags & 
+              requestedProperties );
+
+        if (matchesFilter && allPropertiesAvailable) {
+            debug writeln("Using memory type ", i);
+            return i;
+        }
+    }
+
+    enforce(false);
+    return 0;
+}
+
+
+void sendDataToBuffer(T)(VkDevice logicalDevice, Buffer buffer, T *data) {
+    void *map;
+    vkMapMemory(logicalDevice, buffer.memory, 0, buffer.size, 0, &map);
+    import core.stdc.string : memcpy;
+    memcpy(map, data, buffer.size);
+    vkUnmapMemory(logicalDevice, buffer.memory);
+}
+
+VkDescriptorPool createDescriptorPool(VkDevice logicalDevice) {
+    VkDescriptorPoolSize poolSize = {
+        descriptorCount : cast(uint) Globals.uniforms.length,
+    };
+
+    VkDescriptorPoolCreateInfo createInfo = {
+        poolSizeCount : 1,
+        pPoolSizes    : &poolSize,
+        maxSets       : cast(uint) Globals.uniforms.length,
+    };
+
+    VkDescriptorPool ret;
+
+    auto errors = 
+        vkCreateDescriptorPool(logicalDevice, &createInfo, null, &ret);
+    enforce(!errors, "Failed to create a descriptor pool");
+
+    return ret;
+}
+
+VkDescriptorSet[] 
+createDescriptorSets(VkDevice              logicalDevice, 
+                     VkDescriptorPool      descriptorPool,
+                     VkDescriptorSetLayout descriptorSetLayout,
+                     Buffer[]              uniformBuffers) 
+{
+    VkDescriptorSetLayout[] layouts;
+    layouts.length = Globals.uniforms.length;
+    layouts[] = descriptorSetLayout;
+
+    debug writeln(layouts);
+
+    VkDescriptorSetAllocateInfo allocInfo = {
+        descriptorPool : descriptorPool,
+        descriptorSetCount : cast(uint) Globals.uniforms.length,
+        pSetLayouts        : layouts.ptr,
+    };
+
+    VkDescriptorSet[] ret;
+    ret.length = Globals.uniforms.length;
+
+    auto errors = vkAllocateDescriptorSets(logicalDevice, &allocInfo, ret.ptr);
+    enforce(!errors, "Failed to allocate descriptor sets.");
+
+    foreach (i, set; ret) {
+        VkDescriptorBufferInfo bufferInfo = {
+            buffer : uniformBuffers[i].buffer,
+            offset : 0,
+            range  : Uniforms.sizeof,
+        };
+
+        VkWriteDescriptorSet write = {
+            dstSet          : ret[i],
+            dstBinding      : 0,
+            dstArrayElement : 0,
+            descriptorType  : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            descriptorCount : 1,
+            pBufferInfo     : &bufferInfo,
+        };
+
+        vkUpdateDescriptorSets(logicalDevice, 1, &write, 0, null);
+    }
+
+    return ret;
+}
+
+Buffer[] createUniformBuffers(VkDevice         logicalDevice, 
+                              VkPhysicalDevice physicalDevice,
+                              ulong            count) 
+{
+    Buffer[] ret;
+    ret.length              = count;
+    Globals.uniforms.length = count;
+
+    foreach (i; 0 .. ret.length) {
+        ret[i] = createBuffer(
+            logicalDevice, 
+            physicalDevice,
+            Uniforms.sizeof, 
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+            ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
+              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+        );
+    }
+
+    return ret;
+}
+
+
+
 /// Clean up all Vulkan state, ready to shut down the application. Or recreate
 /// the entire Vulkan context. Or whatever.
 void vulkanCleanup(VkInstance                 instance,
                    VkDebugUtilsMessengerEXT   messenger,
                    VkSurfaceKHR               surface,
                    VkDevice                   logicalDevice,
+                   Buffer[]                   buffers,
+                   VkDescriptorSetLayout      descriptorSetLayout,
                    VkPipelineLayout           pipelineLayout,
+                   VkDescriptorPool           descriptorPool,
                    VkCommandPool              commandPool,
                    SwapchainWithDependents    swapchain,
                    VkSemaphore              []allSemaphores,
@@ -830,6 +1034,15 @@ void vulkanCleanup(VkInstance                 instance,
     cleanupSwapchain(logicalDevice, pipelineLayout, commandPool, swapchain);
     vkDestroyCommandPool(logicalDevice, commandPool, null);
     vkDestroyPipelineLayout(logicalDevice, pipelineLayout, null);
+
+    foreach(buffer; buffers) {
+        vkDestroyBuffer(logicalDevice, buffer.buffer, null);
+        vkFreeMemory(logicalDevice, buffer.memory, null);
+    }
+
+    vkDestroyDescriptorPool(logicalDevice, descriptorPool, null);
+
+    vkDestroyDescriptorSetLayout(logicalDevice, descriptorSetLayout, null);
 
     foreach (semaphore; allSemaphores) {
         vkDestroySemaphore(logicalDevice, semaphore, null);
@@ -846,4 +1059,3 @@ void vulkanCleanup(VkInstance                 instance,
     vkDestroySurfaceKHR(instance, surface, null);
     vkDestroyInstance(instance, null);
 }
-

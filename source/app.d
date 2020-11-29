@@ -11,6 +11,9 @@ enum MAX_FRAMES_IN_FLIGHT = 2;
 
 void main() {
 
+    import core.time;
+    Globals.programT0 = MonoTime.currTime();
+
     glfwInit();
     scope (exit) glfwTerminate();
 
@@ -134,16 +137,14 @@ void main() {
 
     import glfw3.vulkan : glfwCreateWindowSurface;
 
-    VkResult createSurfaceResult = cast(erupted.VkResult) 
-        glfwCreateWindowSurface(instance, window, null, cast(ulong*)&surface);
-    enforce(createSurfaceResult == VK_SUCCESS, 
-            "Failed to create a window surface!");
+    {
+        auto errors = cast(erupted.VkResult) glfwCreateWindowSurface(
+            instance, window, null, cast(ulong*)&surface);
+        enforce(!errors, "Failed to create a window surface!");
+    }
 
     VkPhysicalDevice physicalDevice = 
         selectPhysicalDevice(instance, requiredDeviceExtensions, surface);
-
-    // Logical device
-    VkDevice logicalDevice;
 
     // Create the device queue
     QueueFamilies queueFamilies = selectQueueFamilies(physicalDevice, surface);
@@ -180,6 +181,9 @@ void main() {
         ppEnabledExtensionNames : requiredDeviceExtensions.ptr,
     };
 
+    // Logical device
+    VkDevice logicalDevice;
+
     auto logicalDeviceCreatedOkay = 
         vkCreateDevice(physicalDevice, &deviceCreateInfo, null, &logicalDevice);
     enforce(logicalDeviceCreatedOkay == VK_SUCCESS, 
@@ -193,12 +197,41 @@ void main() {
     vkGetDeviceQueue(logicalDevice, queueFamilies.graphics.get, 0, &graphicsQueue);
     vkGetDeviceQueue(logicalDevice, queueFamilies.present.get, 0, &presentQueue);
 
-    // Create pipeline layout. This is where uniforms would go.
+    VkDescriptorSetLayout descriptorSetLayout;
+
+    {
+        VkDescriptorSetLayoutBinding uboLayoutBinding = {
+            binding            : 0,
+            descriptorType     : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            descriptorCount    : 1,
+            stageFlags         : VK_SHADER_STAGE_VERTEX_BIT,
+            pImmutableSamplers : null, // may handle textures in future?
+        };
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo = {
+            bindingCount : 1,
+            pBindings    : &uboLayoutBinding,
+        };
+
+        auto errors = vkCreateDescriptorSetLayout(
+            logicalDevice, &layoutInfo, null, &descriptorSetLayout);
+        enforce(!errors);
+    }
+
+    // Create descriptor pool
+
+    VkDescriptorPool descriptorPool;
+
+    // Create pipeline layout.
 
     VkPipelineLayout pipelineLayout;
 
     {
-        VkPipelineLayoutCreateInfo createInfo;
+        VkPipelineLayoutCreateInfo createInfo = {
+            setLayoutCount : 1,
+            pSetLayouts    : &descriptorSetLayout,
+        };
+
         auto errors = vkCreatePipelineLayout(
             logicalDevice, &createInfo, null, &pipelineLayout);
         enforce(!errors, "Failed to create pipeline layout");
@@ -219,6 +252,17 @@ void main() {
         enforce(!errors, "Failed to create command pool.");
     }
 
+    // Create vertex buffer
+
+    Buffer vertexBuffer = createBuffer(
+        logicalDevice, 
+        physicalDevice,
+        Globals.vertices.length * Vertex.sizeof,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
+        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+    );
+
     // Create swapchain
 
     auto surfaceFormat = physicalDevice.getSurfaceFormat(surface);
@@ -226,22 +270,59 @@ void main() {
 
     SwapchainWithDependents swapchain;
 
-    swapchain.swapchain  = logicalDevice.createSwapchain(
+    swapchain.swapchain      = logicalDevice.createSwapchain(
         physicalDevice, surface, window);
-    swapchain.imageViews = logicalDevice.createImageViews(
+    swapchain.imageViews     = logicalDevice.createImageViews(
         physicalDevice, surface, swapchain.swapchain, window);
-    swapchain.renderPass = logicalDevice.createRenderPass(
+    swapchain.uniformBuffers = logicalDevice.createUniformBuffers(
+        physicalDevice, swapchain.imageViews.length);
+    swapchain.renderPass     = logicalDevice.createRenderPass(
         surfaceFormat);
-    swapchain.pipeline   = logicalDevice.createGraphicsPipeline(
+    swapchain.pipeline       = logicalDevice.createGraphicsPipeline(
         pipelineLayout, surfaceExtent, swapchain.renderPass);
-    swapchain.framebuffers = logicalDevice.createFramebuffers(
+    swapchain.framebuffers   = logicalDevice.createFramebuffers(
         swapchain.imageViews, swapchain.renderPass, surfaceExtent);
     swapchain.commandBuffers = logicalDevice.createCommandBuffers(
         swapchain.framebuffers, commandPool);
+    swapchain.descriptorPool = logicalDevice.createDescriptorPool();
+    swapchain.descriptorSets = logicalDevice.createDescriptorSets(
+        swapchain.descriptorPool, descriptorSetLayout, swapchain.uniformBuffers);
+
+    // Send data to the buffers
+
+    sendDataToBuffer(logicalDevice, vertexBuffer, Globals.vertices.ptr);
+    
+    void updateUniforms(VkDevice logicalDevice, Buffer uniformBuffer, uint currentImage) 
+        in (currentImage < Globals.uniforms.length)
+    {
+        MonoTime currentTime = MonoTime.currTime();
+
+        import std.conv : to;
+        auto duration = to!TickDuration(currentTime - Globals.programT0);
+        const float timeAsFloat = core.time.to!("seconds", float)(duration);
+
+        import gl3n.linalg;
+        Globals.uniforms[currentImage].model = 
+            mat4.identity.rotatez(timeAsFloat);
+
+        sendDataToBuffer(
+            logicalDevice, 
+            uniformBuffer, 
+            &Globals.uniforms[currentImage]
+        );
+    }
 
     // Record commands
 
-    issueRenderCommands(swapchain, surfaceExtent);
+    issueRenderCommands(
+        swapchain, 
+        surfaceExtent, 
+        pipelineLayout, 
+        swapchain.descriptorSets, 
+        vertexBuffer.buffer
+    );
+
+    // Create sync objects
 
     VkSemaphore[MAX_FRAMES_IN_FLIGHT] imageAvailableSemaphores;
     VkSemaphore[MAX_FRAMES_IN_FLIGHT] renderFinishedSemaphores;
@@ -293,6 +374,10 @@ void main() {
                               imageAvailableSemaphores[Globals.currentFrame], 
                               VK_NULL_HANDLE, &imageIndex);
 
+        enforce(imageIndex < imagesInFlightFences.length);
+        enforce(imageIndex < Globals.uniforms.length);
+        enforce(imageIndex < swapchain.uniformBuffers.length);
+
         if (imagesInFlightFences[imageIndex] != VK_NULL_HANDLE) {
             auto fenceStatus = logicalDevice.vkGetFenceStatus(
                 imagesInFlightFences[imageIndex]);
@@ -312,7 +397,6 @@ void main() {
         VkSemaphore[1]          waitSemaphores   = [imageAvailableSemaphores[Globals.currentFrame]];
         VkSemaphore[1]          signalSemaphores = [renderFinishedSemaphores[Globals.currentFrame]];
 
-
         VkSubmitInfo submitInfo = {
             waitSemaphoreCount   : 1,
             pWaitSemaphores      : waitSemaphores.ptr,
@@ -324,6 +408,8 @@ void main() {
         };
 
         vkResetFences(logicalDevice, 1, &inFlightFences[Globals.currentFrame]);
+
+        updateUniforms(logicalDevice, swapchain.uniformBuffers[imageIndex], imageIndex);
 
         auto submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, 
                                           inFlightFences[Globals.currentFrame]);
@@ -343,26 +429,28 @@ void main() {
 
         auto queuePresentResult = vkQueuePresentKHR(presentQueue, &presentInfo);
 
+        if (queuePresentResult == VK_ERROR_OUT_OF_DATE_KHR || 
+            queuePresentResult == VK_SUBOPTIMAL_KHR || 
+            Globals.framebufferWasResized) 
         {
-            if (queuePresentResult == VK_ERROR_OUT_OF_DATE_KHR || 
-                queuePresentResult == VK_SUBOPTIMAL_KHR || 
-                Globals.framebufferWasResized) 
-            {
-                swapchain = recreateSwapchain(
-                    logicalDevice, 
-                    physicalDevice, 
-                    surface, 
-                    window, 
-                    pipelineLayout, 
-                    commandPool, 
-                    swapchain
-                );
-            }
+            swapchain = recreateSwapchain(
+                logicalDevice, 
+                physicalDevice, 
+                surface, 
+                window,
+                vertexBuffer.buffer,
+                pipelineLayout, 
+                descriptorSetLayout,
+                commandPool, 
+                swapchain
+            );
+
+            Globals.uniforms.length = swapchain.imageViews.length;
         }
 
         Globals.currentFrame = 
             (Globals.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-    }
+    } // End of main loop
 
     vkDeviceWaitIdle(logicalDevice);
 
@@ -370,7 +458,10 @@ void main() {
                   messenger,
                   surface, 
                   logicalDevice, 
+                  [vertexBuffer] ~ swapchain.uniformBuffers,
+                  descriptorSetLayout,
                   pipelineLayout, 
+                  descriptorPool,
                   commandPool,
                   swapchain,
                   imageAvailableSemaphores ~ renderFinishedSemaphores, 

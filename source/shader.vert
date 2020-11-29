@@ -1,14 +1,17 @@
 #version 450
 
-layout(location = 0) out vec4 vertex;
+layout(binding  = 0) uniform UniformBufferObject {
+    mat4 model;
+    //mat4 view;
+    //mat4 projection;
+} ubo;
 
-vec2 positions[3] = {
-    vec2(+0.0, -0.5),
-    vec2(+0.5, +0.5),
-    vec2(-0.5, +0.5),
-};
+layout(location = 0) in  vec2 inPosition;
+layout(location = 1) in  vec3 inColour;
+
+layout(location = 0) out vec3 outColour;
 
 void main() {
-    vertex = vec4(positions[gl_VertexIndex], 0.0, 1.0);
-    gl_Position = vertex;
+    outColour   = inColour; 
+    gl_Position = ubo.model * vec4(inPosition, 0.0, 1.0);
 }
