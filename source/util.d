@@ -3,7 +3,10 @@ module util;
 import std.stdio;
 import std.exception : enforce;
 import std.typecons : Nullable;
+import std.experimental.logger;
+
 import glfw3.api;
+import gl3n.linalg;
 import erupted;
 
 import globals;
@@ -156,6 +159,8 @@ void cleanupSwapchain(VkDevice                logicalDevice,
                       VkCommandPool           commandPool,
                       SwapchainWithDependents swapchain) 
 {
+    vkDeviceWaitIdle(logicalDevice);
+
     foreach (framebuffer; swapchain.framebuffers) {
         logicalDevice.vkDestroyFramebuffer(framebuffer, null);
     }
@@ -182,6 +187,7 @@ void cleanupSwapchain(VkDevice                logicalDevice,
 
     logicalDevice.vkDestroySwapchainKHR(swapchain.swapchain, null);
 }
+
 /*
 -------------------------------------------------------------------------------
 --  recreateSwapchain
@@ -201,6 +207,42 @@ struct SwapchainWithDependents {
 }
 
 SwapchainWithDependents 
+createSwapchain(VkDevice                 logicalDevice,
+                VkPhysicalDevice         physicalDevice, 
+                VkSurfaceKHR             surface, 
+                GLFWwindow              *window,                        
+                VkPipelineLayout         pipelineLayout,
+                VkDescriptorSetLayout    descriptorSetLayout,
+                VkCommandPool            commandPool)
+{
+    SwapchainWithDependents ret;
+
+    vkDeviceWaitIdle(logicalDevice);
+
+    const format = physicalDevice.getSurfaceFormat(surface);
+    const extent = physicalDevice.getSurfaceExtent(surface, window);
+
+    ret.swapchain      = logicalDevice.createSwapchain(
+        physicalDevice, surface, window);
+    ret.imageViews     = logicalDevice.createImageViews(
+        physicalDevice, surface, ret.swapchain, window);
+    ret.uniformBuffers = logicalDevice.createUniformBuffers(
+        physicalDevice, ret.imageViews.length);
+    ret.renderPass     = logicalDevice.createRenderPass(format);
+    ret.pipeline       = logicalDevice.createGraphicsPipeline(
+        pipelineLayout, extent, ret.renderPass);
+    ret.framebuffers   = logicalDevice.createFramebuffers(
+        ret.imageViews, ret.renderPass, extent);
+    ret.commandBuffers = logicalDevice.createCommandBuffers(
+        ret.framebuffers, commandPool);
+    ret.descriptorPool = logicalDevice.createDescriptorPool();
+    ret.descriptorSets = logicalDevice.createDescriptorSets(
+        ret.descriptorPool, descriptorSetLayout, ret.uniformBuffers);
+
+    return ret;
+}
+
+SwapchainWithDependents 
 recreateSwapchain(VkDevice                 logicalDevice,
                   VkPhysicalDevice         physicalDevice, 
                   VkSurfaceKHR             surface, 
@@ -209,37 +251,11 @@ recreateSwapchain(VkDevice                 logicalDevice,
                   VkPipelineLayout         pipelineLayout,
                   VkDescriptorSetLayout    descriptorSetLayout,
                   VkCommandPool            commandPool,
-                  SwapchainWithDependents  oldSwapchain) 
+                  SwapchainWithDependents  oldSwapchain)
 {
-    // NOTE: We re-use the old swapchain's command pool. 
-    // cleanupSwapchain() doesn't free it.
-    SwapchainWithDependents ret;
-
     vkDeviceWaitIdle(logicalDevice);
-
     cleanupSwapchain(logicalDevice, pipelineLayout, commandPool, oldSwapchain);
-
-    const format = physicalDevice.getSurfaceFormat(surface);
-    const extent = physicalDevice.getSurfaceExtent(surface, window);
-
-    ret.swapchain      = logicalDevice.createSwapchain(physicalDevice, surface, window);
-    ret.imageViews     = logicalDevice.createImageViews(physicalDevice, surface, ret.swapchain, window);
-    ret.renderPass     = logicalDevice.createRenderPass(format);
-    ret.descriptorPool = logicalDevice.createDescriptorPool();
-    ret.descriptorSets = createDescriptorSets(logicalDevice, ret.descriptorPool, descriptorSetLayout, oldSwapchain.uniformBuffers);
-    ret.uniformBuffers = createUniformBuffers(logicalDevice, physicalDevice, ret.imageViews.length);
-
-    // FIXME: This right here re-compiles the shaders. That really seems
-    // unnecessary, since the shaders will never change on disk while the
-    // program is running.
-    ret.pipeline       = logicalDevice.createGraphicsPipeline(pipelineLayout, extent, ret.renderPass);
-
-    ret.framebuffers   = logicalDevice.createFramebuffers(ret.imageViews, ret.renderPass, extent);
-    ret.commandBuffers = logicalDevice.createCommandBuffers(ret.framebuffers, commandPool);
-
-    issueRenderCommands(ret, extent, pipelineLayout, ret.descriptorSets, vertexBuffer);
-
-    return ret;
+    return createSwapchain(logicalDevice, physicalDevice, surface, window, pipelineLayout, descriptorSetLayout, commandPool);
 }
 
 /// Create a command buffer for each given framebuffer.
@@ -805,7 +821,6 @@ VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
 void issueRenderCommands(ref SwapchainWithDependents swapchain,
                          in  VkExtent2D              surfaceExtent,
                              VkPipelineLayout        pipelineLayout,
-                             VkDescriptorSet[]       descriptorSets,
                              VkBuffer                vertexBuffer)
 {
     // Issue commands to the swapchain command buffers
@@ -833,7 +848,7 @@ void issueRenderCommands(ref SwapchainWithDependents swapchain,
         commandBuffer.vkCmdBeginRenderPass(&info, VK_SUBPASS_CONTENTS_INLINE);
         commandBuffer.vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, swapchain.pipeline);
         commandBuffer.vkCmdBindVertexBuffers(0, 1, buffers.ptr, offsets.ptr);
-        commandBuffer.vkCmdBindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 0, null);
+        commandBuffer.vkCmdBindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &swapchain.descriptorSets[i], 0, null);
         commandBuffer.vkCmdDraw(3, 1, 0, 0);
         commandBuffer.vkCmdEndRenderPass();
 
@@ -889,7 +904,7 @@ Buffer createBuffer(VkDevice              logicalDevice,
     auto bindErrors = vkBindBufferMemory(logicalDevice, ret.buffer, ret.memory, 0);
     enforce(!bindErrors, "Failed to bind buffer");
 
-    debug writeln("Returning buffer ", ret);
+    debug log("Returning buffer ", ret);
     return ret;
 }
 
@@ -908,7 +923,7 @@ uint findMemoryType(VkPhysicalDevice physicalDevice,
               requestedProperties );
 
         if (matchesFilter && allPropertiesAvailable) {
-            debug writeln("Using memory type ", i);
+            debug log("Using memory type ", i);
             return i;
         }
     }
@@ -956,7 +971,7 @@ createDescriptorSets(VkDevice              logicalDevice,
     layouts.length = Globals.uniforms.length;
     layouts[] = descriptorSetLayout;
 
-    debug writeln(layouts);
+    debug log(layouts);
 
     VkDescriptorSetAllocateInfo allocInfo = {
         descriptorPool : descriptorPool,
@@ -1014,7 +1029,27 @@ Buffer[] createUniformBuffers(VkDevice         logicalDevice,
     return ret;
 }
 
+mat4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
+    immutable forward = (cameraPosition - targetPosition).normalized;
+    immutable side    = up.cross(forward).normalized;
+    immutable newUp   = forward.cross(side).normalized;
 
+    debug log("forward: ", forward);
+    debug log("side   : ", side);
+    debug log("newUp  : ", newUp);
+
+    mat4 ret = mat4(
+        vec4(side.x, newUp.x, forward.x, 0.0),
+        vec4(side.y, newUp.y, forward.y, 0.0),
+        vec4(side.z, newUp.z, forward.z, 0.0),
+        vec4( -dot(cameraPosition, side),
+              -dot(cameraPosition, newUp),
+              -dot(cameraPosition, forward),
+              1.0),
+    );
+
+    return ret;
+}
 
 /// Clean up all Vulkan state, ready to shut down the application. Or recreate
 /// the entire Vulkan context. Or whatever.

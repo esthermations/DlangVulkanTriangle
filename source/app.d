@@ -1,5 +1,6 @@
 import std.stdio;
 import std.exception;
+import std.experimental.logger;
 import erupted;
 import glfw3.api;
 
@@ -22,17 +23,18 @@ void main() {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    auto window = glfwCreateWindow(800, 600, "Carl", null, null);
+    auto window = glfwCreateWindow(Globals.framebufferWidth, 
+                                   Globals.framebufferHeight, 
+                                   "Carl", 
+                                   null, 
+                                   null);
     scope (exit) glfwDestroyWindow(window);
 
-    extern (C) 
-    void fbResizeCallback(GLFWwindow *window, int width, int height) {
-        Globals.framebufferWidth      = width;
-        Globals.framebufferHeight     = height;
-        Globals.framebufferWasResized = true;
+    {
+        import glfw_callbacks;
+        glfwSetFramebufferSizeCallback(window, &framebufferResized);
+        glfwSetKeyCallback(window, &keyPressed);
     }
-
-    glfwSetFramebufferSizeCallback(window, &fbResizeCallback);
 
     /*
     ---------------------------------------------------------------------------
@@ -268,25 +270,15 @@ void main() {
     auto surfaceFormat = physicalDevice.getSurfaceFormat(surface);
     auto surfaceExtent = physicalDevice.getSurfaceExtent(surface, window);
 
-    SwapchainWithDependents swapchain;
-
-    swapchain.swapchain      = logicalDevice.createSwapchain(
-        physicalDevice, surface, window);
-    swapchain.imageViews     = logicalDevice.createImageViews(
-        physicalDevice, surface, swapchain.swapchain, window);
-    swapchain.uniformBuffers = logicalDevice.createUniformBuffers(
-        physicalDevice, swapchain.imageViews.length);
-    swapchain.renderPass     = logicalDevice.createRenderPass(
-        surfaceFormat);
-    swapchain.pipeline       = logicalDevice.createGraphicsPipeline(
-        pipelineLayout, surfaceExtent, swapchain.renderPass);
-    swapchain.framebuffers   = logicalDevice.createFramebuffers(
-        swapchain.imageViews, swapchain.renderPass, surfaceExtent);
-    swapchain.commandBuffers = logicalDevice.createCommandBuffers(
-        swapchain.framebuffers, commandPool);
-    swapchain.descriptorPool = logicalDevice.createDescriptorPool();
-    swapchain.descriptorSets = logicalDevice.createDescriptorSets(
-        swapchain.descriptorPool, descriptorSetLayout, swapchain.uniformBuffers);
+    SwapchainWithDependents swapchain = createSwapchain(
+        logicalDevice,
+        physicalDevice,
+        surface,
+        window,
+        pipelineLayout,
+        descriptorSetLayout,
+        commandPool
+    );
 
     // Send data to the buffers
 
@@ -301,13 +293,29 @@ void main() {
         auto duration = to!TickDuration(currentTime - Globals.programT0);
         const float timeAsFloat = core.time.to!("seconds", float)(duration);
 
+        import game;
         import gl3n.linalg;
+
         Globals.uniforms[currentImage].model = 
-            mat4.identity.rotatez(timeAsFloat);
+            mat4.identity.rotatez(timeAsFloat)
+                         .rotatex(timeAsFloat / 2.0)
+                         .translate(GameState.playerPosition);
+
+        Globals.uniforms[currentImage].view =
+            lookAt(GameState.cameraPosition, 
+                   GameState.playerPosition, 
+                   vec3(0.0, 1.0, 0.0));
+
+        Globals.uniforms[currentImage].projection = 
+            mat4.perspective(Globals.framebufferWidth, 
+                             Globals.framebufferHeight, 
+                             Globals.fieldOfView, 
+                             1.0, 
+                             10.0);
 
         sendDataToBuffer(
             logicalDevice, 
-            uniformBuffer, 
+            uniformBuffer,
             &Globals.uniforms[currentImage]
         );
     }
@@ -315,12 +323,7 @@ void main() {
     // Record commands
 
     issueRenderCommands(
-        swapchain, 
-        surfaceExtent, 
-        pipelineLayout, 
-        swapchain.descriptorSets, 
-        vertexBuffer.buffer
-    );
+        swapchain, surfaceExtent, pipelineLayout, vertexBuffer.buffer);
 
     // Create sync objects
 
@@ -383,7 +386,7 @@ void main() {
                 imagesInFlightFences[imageIndex]);
 
             if (fenceStatus == VK_NOT_READY) {
-                debug writeln("Waiting for fence. (Frame ", frameNumber, ")");
+                debug log("Waiting for fence. (Frame ", frameNumber, ")");
             }
             
             vkWaitForFences(logicalDevice, 1, &imagesInFlightFences[imageIndex], 
@@ -411,6 +414,9 @@ void main() {
 
         updateUniforms(logicalDevice, swapchain.uniformBuffers[imageIndex], imageIndex);
 
+        import game;
+        tickGameState();
+
         auto submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, 
                                           inFlightFences[Globals.currentFrame]);
                                         
@@ -429,10 +435,20 @@ void main() {
 
         auto queuePresentResult = vkQueuePresentKHR(presentQueue, &presentInfo);
 
+        switch (queuePresentResult) {
+            case VK_ERROR_OUT_OF_DATE_KHR: debug log("Out of date!");
+            case VK_SUBOPTIMAL_KHR: debug log("Suboptimal!");
+            default: break;
+        }
+
         if (queuePresentResult == VK_ERROR_OUT_OF_DATE_KHR || 
             queuePresentResult == VK_SUBOPTIMAL_KHR || 
             Globals.framebufferWasResized) 
         {
+            debug log("Recreating swapchain (frame ", frameNumber, ")");
+
+            Globals.framebufferWasResized = false;
+
             swapchain = recreateSwapchain(
                 logicalDevice, 
                 physicalDevice, 
@@ -444,6 +460,11 @@ void main() {
                 commandPool, 
                 swapchain
             );
+
+            auto extent = physicalDevice.getSurfaceExtent(surface, window);
+
+            issueRenderCommands(
+                swapchain, extent, pipelineLayout, vertexBuffer.buffer);
 
             Globals.uniforms.length = swapchain.imageViews.length;
         }
@@ -458,7 +479,7 @@ void main() {
                   messenger,
                   surface, 
                   logicalDevice, 
-                  [vertexBuffer] ~ swapchain.uniformBuffers,
+                  [vertexBuffer],
                   descriptorSetLayout,
                   pipelineLayout, 
                   descriptorPool,

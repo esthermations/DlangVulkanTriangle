@@ -8,9 +8,12 @@ import core.time;
 /// Global state. All member variables should be static.
 struct Globals {
     static ulong currentFrame; /// Latest frame? This might be named better.
+
     static bool  framebufferWasResized = false;
     static uint  framebufferWidth = 800;
     static uint  framebufferHeight = 600;
+
+    static float fieldOfView = 90.0;
 
     static MonoTime programT0;
 
@@ -29,8 +32,8 @@ struct Globals {
 
 struct Uniforms {
     mat4 model;
-    //mat4 view;
-    //mat4 projection;
+    mat4 view;
+    mat4 projection;
 }
 
 struct Vertex {
