@@ -8,6 +8,7 @@ enum GameAction {
     MOVE_LEFT,
     MOVE_BACKWARDS,
     MOVE_RIGHT,
+    PRINT_DEBUG_INFO,
 }
 
 enum MOVEMENT_IMPULSE = 0.01;
@@ -29,6 +30,7 @@ GameAction associatedAction(int key) pure nothrow @nogc {
         case GLFW_KEY_A: return GameAction.MOVE_LEFT;
         case GLFW_KEY_S: return GameAction.MOVE_BACKWARDS;
         case GLFW_KEY_D: return GameAction.MOVE_RIGHT;
+        case GLFW_KEY_P: return GameAction.PRINT_DEBUG_INFO;
         default: return GameAction.NO_ACTION;
     }
     assert(0);
@@ -59,8 +61,10 @@ void tickGameState() {
         GameState.playerAcceleration.x -= MOVEMENT_IMPULSE;
     }
 
-    import std.experimental.logger;
-    debug log("Player position:     ", GameState.playerPosition);
-    debug log("Player velocity:     ", GameState.playerVelocity);
-    debug log("Player acceleration: ", GameState.playerAcceleration);
+    if (GameState.actionRequested[GameAction.PRINT_DEBUG_INFO]) {
+        import std.experimental.logger;
+        debug log("Player position:     ", GameState.playerPosition);
+        debug log("Player velocity:     ", GameState.playerVelocity);
+        debug log("Player acceleration: ", GameState.playerAcceleration);
+    }
 }

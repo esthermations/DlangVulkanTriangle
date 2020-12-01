@@ -17,14 +17,20 @@ struct Globals {
 
     static MonoTime programT0;
 
-    static VkClearValue clearColour = { 
-        color : { float32 : [0.0, 0.0, 0.0, 1.0] },
-    };
+    static VkClearValue[] clearValues = [
+        { color        : { float32 : [0.0, 0.0, 0.0, 1.0] } },
+        { depthStencil : { depth: 1.0, stencil: 0 } },
+    ];
 
     static const Vertex[] vertices = [ 
-        { position: vec2( 0.0, -0.5), colour: vec3(1.0, 0.0, 0.0) },
-        { position: vec2( 0.5,  0.5), colour: vec3(0.0, 1.0, 0.0) },
-        { position: vec2(-0.5,  0.5), colour: vec3(0.0, 0.0, 1.0) },
+        // First triangle
+        { position: vec3( 0.0, -0.5,  0.0), colour: vec3(1.0, 0.0, 0.0) },
+        { position: vec3( 0.5,  0.5,  0.0), colour: vec3(0.0, 1.0, 0.0) },
+        { position: vec3(-0.5,  0.5,  0.0), colour: vec3(0.0, 0.0, 1.0) },
+        // Second triangle
+        { position: vec3( 0.0, -0.5, -0.5), colour: vec3(1.0, 0.0, 0.0) },
+        { position: vec3( 0.5,  0.5, -0.5), colour: vec3(0.0, 1.0, 0.0) },
+        { position: vec3(-0.5,  0.5, -0.5), colour: vec3(0.0, 0.0, 1.0) },
     ];
 
     static Uniforms[] uniforms;
@@ -37,7 +43,7 @@ struct Uniforms {
 }
 
 struct Vertex {
-    vec2 position;
+    vec3 position;
     vec3 colour;
 
     static VkVertexInputBindingDescription getBindingDescription() {
@@ -54,7 +60,7 @@ struct Vertex {
             {
                 binding : 0,
                 location : 0,
-                format   : VK_FORMAT_R32G32_SFLOAT,
+                format   : VK_FORMAT_R32G32B32_SFLOAT,
                 offset   : Vertex.position.offsetof,
             },
             {

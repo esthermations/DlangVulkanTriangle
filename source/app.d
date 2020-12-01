@@ -284,7 +284,9 @@ void main() {
 
     sendDataToBuffer(logicalDevice, vertexBuffer, Globals.vertices.ptr);
     
-    void updateUniforms(VkDevice logicalDevice, Buffer uniformBuffer, uint currentImage) 
+    void updateUniforms(VkDevice logicalDevice, 
+                        Buffer uniformBuffer, 
+                        uint currentImage) 
         in (currentImage < Globals.uniforms.length)
     {
         MonoTime currentTime = MonoTime.currTime();

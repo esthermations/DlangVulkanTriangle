@@ -100,11 +100,42 @@ createSwapchain(VkDevice          logicalDevice,
     return swapchain;
 }
 
-VkImageView[] createImageViews(VkDevice          logicalDevice,                                
-                               VkPhysicalDevice  physicalDevice,
-                               VkSurfaceKHR      surface,
-                               VkSwapchainKHR    swapchain,
-                               GLFWwindow       *window) 
+VkImageView createImageView(VkDevice           logicalDevice, 
+                            VkImage            image, 
+                            VkFormat           format, 
+                            VkImageAspectFlags aspectMask)
+{
+    VkImageViewCreateInfo createInfo = {
+        image      : image,
+        viewType   : VK_IMAGE_VIEW_TYPE_2D,
+        format     : format,
+        components : {
+            r : VK_COMPONENT_SWIZZLE_IDENTITY,
+            g : VK_COMPONENT_SWIZZLE_IDENTITY,
+            b : VK_COMPONENT_SWIZZLE_IDENTITY,
+            a : VK_COMPONENT_SWIZZLE_IDENTITY,
+        },
+        subresourceRange : {
+            aspectMask     : aspectMask,
+            baseMipLevel   : 0,
+            levelCount     : 1,
+            baseArrayLayer : 0,
+            layerCount     : 1,
+        },
+    };
+
+    VkImageView ret;
+    auto errors = vkCreateImageView(logicalDevice, &createInfo, null, &ret);
+    enforce(!errors, "Failed to create an image view.");
+
+    return ret;
+}
+
+VkImageView[] createImageViewsForSwapchain(VkDevice          logicalDevice,                                
+                                           VkPhysicalDevice  physicalDevice,
+                                           VkSurfaceKHR      surface,
+                                           VkSwapchainKHR    swapchain,
+                                           GLFWwindow       *window) 
 {
     // Images
     
@@ -116,8 +147,7 @@ VkImageView[] createImageViews(VkDevice          logicalDevice,
     vkGetSwapchainImagesKHR(logicalDevice, swapchain, &numImages, images.ptr);
 
     auto support = querySwapchainSupport(physicalDevice, surface);
-    auto swapchainImageFormat = selectSurfaceFormat(support.formats).format;
-    auto swapchainExtent      = selectExtent(window, support.capabilities);
+    auto format  = selectSurfaceFormat(support.formats).format;
 
     // Image views
 
@@ -125,28 +155,8 @@ VkImageView[] createImageViews(VkDevice          logicalDevice,
     ret.length = images.length;
 
     foreach(i, image; images) {
-        VkImageViewCreateInfo createInfo = {
-            image      : image,
-            viewType   : VK_IMAGE_VIEW_TYPE_2D,
-            format     : swapchainImageFormat,
-            components : {
-                r : VK_COMPONENT_SWIZZLE_IDENTITY,
-                g : VK_COMPONENT_SWIZZLE_IDENTITY,
-                b : VK_COMPONENT_SWIZZLE_IDENTITY,
-                a : VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            subresourceRange : {
-                aspectMask     : VK_IMAGE_ASPECT_COLOR_BIT,
-                baseMipLevel   : 0,
-                levelCount     : 1,
-                baseArrayLayer : 0,
-                layerCount     : 1,
-            },
-        };
-
-        auto errors = vkCreateImageView(
-            logicalDevice, &createInfo, null, &ret[i]);
-        enforce(!errors, "Failed to create an image view.");
+        ret[i] = createImageView(
+            logicalDevice, image, format, VK_IMAGE_ASPECT_COLOR_BIT);
     }
 
     return ret;
@@ -185,6 +195,10 @@ void cleanupSwapchain(VkDevice                logicalDevice,
         logicalDevice.vkDestroyImageView(view, null);
     }
 
+    vkDestroyImageView(logicalDevice, swapchain.depthResources.imageView, null);
+    vkDestroyImage(logicalDevice, swapchain.depthResources.image, null);
+    vkFreeMemory(logicalDevice, swapchain.depthResources.memory, null);
+
     logicalDevice.vkDestroySwapchainKHR(swapchain.swapchain, null);
 }
 
@@ -201,6 +215,7 @@ struct SwapchainWithDependents {
     VkDescriptorPool  descriptorPool;
     VkDescriptorSet[] descriptorSets;
     Buffer[]          uniformBuffers;
+    DepthResources    depthResources;
     VkPipeline        pipeline;
     VkFramebuffer[]   framebuffers;
     VkCommandBuffer[] commandBuffers;
@@ -219,20 +234,25 @@ createSwapchain(VkDevice                 logicalDevice,
 
     vkDeviceWaitIdle(logicalDevice);
 
-    const format = physicalDevice.getSurfaceFormat(surface);
+    const colourFormat = physicalDevice.getSurfaceFormat(surface);
+    const depthFormat  = VK_FORMAT_D32_SFLOAT;
     const extent = physicalDevice.getSurfaceExtent(surface, window);
+
 
     ret.swapchain      = logicalDevice.createSwapchain(
         physicalDevice, surface, window);
-    ret.imageViews     = logicalDevice.createImageViews(
+    ret.imageViews     = logicalDevice.createImageViewsForSwapchain(
         physicalDevice, surface, ret.swapchain, window);
     ret.uniformBuffers = logicalDevice.createUniformBuffers(
         physicalDevice, ret.imageViews.length);
-    ret.renderPass     = logicalDevice.createRenderPass(format);
+    ret.renderPass     = logicalDevice.createRenderPass(
+        colourFormat, depthFormat);
     ret.pipeline       = logicalDevice.createGraphicsPipeline(
         pipelineLayout, extent, ret.renderPass);
+    ret.depthResources = logicalDevice.createDepthResources(
+        physicalDevice, extent);
     ret.framebuffers   = logicalDevice.createFramebuffers(
-        ret.imageViews, ret.renderPass, extent);
+        ret.imageViews, ret.depthResources.imageView, ret.renderPass, extent);
     ret.commandBuffers = logicalDevice.createCommandBuffers(
         ret.framebuffers, commandPool);
     ret.descriptorPool = logicalDevice.createDescriptorPool();
@@ -283,6 +303,7 @@ VkCommandBuffer[] createCommandBuffers(VkDevice        logicalDevice,
 /// Create a framebuffer for each provided vkImageView.
 VkFramebuffer[] createFramebuffers(VkDevice      logicalDevice, 
                                    VkImageView[] imageViews, 
+                                   VkImageView   depthImageView,
                                    VkRenderPass  renderPass,
                                    VkExtent2D    extent)
 {
@@ -290,11 +311,11 @@ VkFramebuffer[] createFramebuffers(VkDevice      logicalDevice,
     ret.length = imageViews.length;
 
     foreach (i, view; imageViews) {
-        VkImageView[1] attachments = [ view ];
+        VkImageView[2] attachments = [ view, depthImageView ];
 
         VkFramebufferCreateInfo createInfo = {
             renderPass      : renderPass,
-            attachmentCount : 1,
+            attachmentCount : cast(uint) attachments.length,
             pAttachments    : attachments.ptr,
             width           : extent.width,
             height          : extent.height,
@@ -406,6 +427,14 @@ VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
         pAttachments    : &colourBlendAttachment,
     };
 
+    VkPipelineDepthStencilStateCreateInfo depthStencilStateCreateInfo = {
+        depthTestEnable       : VK_TRUE,
+        depthWriteEnable      : VK_TRUE,
+        depthCompareOp        : VK_COMPARE_OP_LESS,
+        depthBoundsTestEnable : VK_FALSE,
+        stencilTestEnable     : VK_FALSE,
+    };
+
     VkPipelineShaderStageCreateInfo[2] shaderStages = 
         [vertStageCreateInfo, fragStageCreateInfo];
 
@@ -417,7 +446,7 @@ VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
         pViewportState      : &viewportStateCreateInfo,
         pRasterizationState : &rasterisationStateCreateInfo,
         pMultisampleState   : &multisampleStateCreateInfo,
-        pDepthStencilState  : null,
+        pDepthStencilState  : &depthStencilStateCreateInfo,
         pColorBlendState    : &colourBlendStateCreateInfo,
         pDynamicState       : null,
         layout              : pipelineLayout,
@@ -446,11 +475,13 @@ VkFormat getSurfaceFormat(VkPhysicalDevice physicalDevice,
 }
 
 VkRenderPass createRenderPass(VkDevice logicalDevice,
-                              VkFormat swapchainImageFormat) 
+                              VkFormat colourFormat,
+                              VkFormat depthFormat) 
 {
 
     VkAttachmentDescription colourAttachment = { 
-        format         : swapchainImageFormat,
+        flags          : 0,
+        format         : colourFormat,
         samples        : VK_SAMPLE_COUNT_1_BIT,
         loadOp         : VK_ATTACHMENT_LOAD_OP_CLEAR,
         storeOp        : VK_ATTACHMENT_STORE_OP_STORE,
@@ -465,25 +496,48 @@ VkRenderPass createRenderPass(VkDevice logicalDevice,
         layout     : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
-    VkSubpassDescription subpass = {
-        pipelineBindPoint    : VK_PIPELINE_BIND_POINT_GRAPHICS,
-        colorAttachmentCount : 1,
-        pColorAttachments    : &colourAttachmentReference,
+    debug log("Depth format is ", depthFormat);
+
+    VkAttachmentDescription depthAttachment = {
+        format         : depthFormat,
+        samples        : VK_SAMPLE_COUNT_1_BIT,
+        loadOp         : VK_ATTACHMENT_LOAD_OP_CLEAR,
+        storeOp        : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        stencilLoadOp  : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        stencilStoreOp : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        initialLayout  : VK_IMAGE_LAYOUT_UNDEFINED,
+        finalLayout    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
+    VkAttachmentReference depthAttachmentReference = {
+        attachment : 1,
+        layout     : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
+    VkSubpassDescription subpass = {
+        pipelineBindPoint       : VK_PIPELINE_BIND_POINT_GRAPHICS,
+        colorAttachmentCount    : 1,
+        pColorAttachments       : &colourAttachmentReference,
+        pDepthStencilAttachment : &depthAttachmentReference,
+    };
 
     VkSubpassDependency dependency = {
         srcSubpass    : VK_SUBPASS_EXTERNAL,
         dstSubpass    : 0,
-        srcStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        srcStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         srcAccessMask : 0,
-        dstStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        dstAccessMask : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        dstStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        dstAccessMask : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
 
+    auto attachments = [colourAttachment, depthAttachment]; 
+
     VkRenderPassCreateInfo createInfo = {
-        attachmentCount : 1,
-        pAttachments    : &colourAttachment,
+        attachmentCount : cast(uint) attachments.length,
+        pAttachments    : attachments.ptr,
         subpassCount    : 1,
         pSubpasses      : &subpass,
         dependencyCount : 1,
@@ -496,8 +550,6 @@ VkRenderPass createRenderPass(VkDevice logicalDevice,
 
     return ret;
 }
-
-
 
 /*
 -------------------------------------------------------------------------------
@@ -514,7 +566,6 @@ struct QueueFamilies {
         return !graphics.isNull && !present.isNull;
     }
 }
-
 
 /// Select queue families that meet our criteria, defined in this function. The
 /// members of QueueFamilies are nullable -- this function may fail to find all
@@ -838,8 +889,8 @@ void issueRenderCommands(ref SwapchainWithDependents swapchain,
                 offset : {0, 0},
                 extent : surfaceExtent,
             },
-            clearValueCount : 1,
-            pClearValues    : &Globals.clearColour,
+            clearValueCount : cast(uint) Globals.clearValues.length,
+            pClearValues    : Globals.clearValues.ptr,
         };
 
         VkBuffer[]     buffers = [vertexBuffer];
@@ -849,7 +900,7 @@ void issueRenderCommands(ref SwapchainWithDependents swapchain,
         commandBuffer.vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, swapchain.pipeline);
         commandBuffer.vkCmdBindVertexBuffers(0, 1, buffers.ptr, offsets.ptr);
         commandBuffer.vkCmdBindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &swapchain.descriptorSets[i], 0, null);
-        commandBuffer.vkCmdDraw(3, 1, 0, 0);
+        commandBuffer.vkCmdDraw(cast(uint) Globals.vertices.length, 1, 0, 0);
         commandBuffer.vkCmdEndRenderPass();
 
         auto endErrors = vkEndCommandBuffer(commandBuffer);
@@ -961,6 +1012,63 @@ VkDescriptorPool createDescriptorPool(VkDevice logicalDevice) {
     return ret;
 }
 
+struct DepthResources {
+    VkImage        image;
+    VkImageView    imageView;
+    VkDeviceMemory memory;
+}
+
+DepthResources createDepthResources(VkDevice         logicalDevice, 
+                                    VkPhysicalDevice physicalDevice,
+                                    VkExtent2D       extent) 
+{
+
+    const format = VK_FORMAT_D32_SFLOAT;
+
+    VkImageCreateInfo createInfo = {
+        imageType     : VK_IMAGE_TYPE_2D,
+        extent        : { width: extent.width, height: extent.height, depth: 1},
+        mipLevels     : 1,
+        arrayLayers   : 1,
+        format        : format,
+        tiling        : VK_IMAGE_TILING_OPTIMAL,
+        initialLayout : VK_IMAGE_LAYOUT_UNDEFINED,
+        usage         : VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        samples       : VK_SAMPLE_COUNT_1_BIT,
+        sharingMode   : VK_SHARING_MODE_EXCLUSIVE,
+    };
+
+    VkImage image;
+    auto createErrors = vkCreateImage(logicalDevice, &createInfo, null, &image);
+    enforce(!createErrors);
+
+    VkMemoryRequirements memoryRequirements;
+    vkGetImageMemoryRequirements(logicalDevice, image, &memoryRequirements);
+
+    VkMemoryAllocateInfo allocInfo = {
+        allocationSize  : memoryRequirements.size,
+        memoryTypeIndex : findMemoryType(physicalDevice, 
+                                         memoryRequirements.memoryTypeBits, 
+                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+    };
+
+    VkDeviceMemory memory;
+    auto allocErrors = 
+        vkAllocateMemory(logicalDevice, &allocInfo, null, &memory);
+    enforce(!allocErrors);
+
+    vkBindImageMemory(logicalDevice, image, memory, 0);
+
+    DepthResources ret = {
+        image     : image,
+        memory    : memory,
+        imageView : createImageView(logicalDevice, image, format, 
+                                    VK_IMAGE_ASPECT_DEPTH_BIT),
+    };
+
+    return ret;
+}
+
 VkDescriptorSet[] 
 createDescriptorSets(VkDevice              logicalDevice, 
                      VkDescriptorPool      descriptorPool,
@@ -1034,9 +1142,9 @@ mat4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
     immutable side    = up.cross(forward).normalized;
     immutable newUp   = forward.cross(side).normalized;
 
-    debug log("forward: ", forward);
-    debug log("side   : ", side);
-    debug log("newUp  : ", newUp);
+    // debug log("forward: ", forward);
+    // debug log("side   : ", side);
+    // debug log("newUp  : ", newUp);
 
     mat4 ret = mat4(
         vec4(side.x, newUp.x, forward.x, 0.0),
