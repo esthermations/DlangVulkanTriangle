@@ -23,17 +23,17 @@ void main() {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    auto window = glfwCreateWindow(Globals.framebufferWidth, 
-                                   Globals.framebufferHeight, 
-                                   "Carl", 
-                                   null, 
-                                   null);
-    scope (exit) glfwDestroyWindow(window);
+    Globals.window = glfwCreateWindow(Globals.framebufferWidth, 
+                                      Globals.framebufferHeight, 
+                                      "Carl", 
+                                      null, 
+                                      null);
+    scope (exit) glfwDestroyWindow(Globals.window);
 
     {
         import glfw_callbacks;
-        glfwSetFramebufferSizeCallback(window, &framebufferResized);
-        glfwSetKeyCallback(window, &keyPressed);
+        glfwSetFramebufferSizeCallback(Globals.window, &framebufferResized);
+        glfwSetKeyCallback(Globals.window, &keyPressed);
     }
 
     /*
@@ -141,7 +141,7 @@ void main() {
 
     {
         auto errors = cast(erupted.VkResult) glfwCreateWindowSurface(
-            instance, window, null, cast(ulong*)&surface);
+            instance, Globals.window, null, cast(ulong*)&surface);
         enforce(!errors, "Failed to create a window surface!");
     }
 
@@ -254,35 +254,20 @@ void main() {
         enforce(!errors, "Failed to create command pool.");
     }
 
-    // Create vertex buffer
-
-    Buffer vertexBuffer = createBuffer(
-        logicalDevice, 
-        physicalDevice,
-        Globals.vertices.length * Vertex.sizeof,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
-        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
-          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
-    );
-
     // Create swapchain
 
     auto surfaceFormat = physicalDevice.getSurfaceFormat(surface);
-    auto surfaceExtent = physicalDevice.getSurfaceExtent(surface, window);
+    auto surfaceExtent = physicalDevice.getSurfaceExtent(surface, Globals.window);
 
     SwapchainWithDependents swapchain = createSwapchain(
         logicalDevice,
         physicalDevice,
         surface,
-        window,
+        Globals.window,
         pipelineLayout,
         descriptorSetLayout,
         commandPool
     );
-
-    // Send data to the buffers
-
-    sendDataToBuffer(logicalDevice, vertexBuffer, Globals.vertices.ptr);
     
     void updateUniforms(VkDevice logicalDevice, 
                         Buffer uniformBuffer, 
@@ -299,21 +284,26 @@ void main() {
         import gl3n.linalg;
 
         Globals.uniforms[currentImage].model = 
-            mat4.identity.rotatez(timeAsFloat)
-                         .rotatex(timeAsFloat / 2.0)
+            mat4.identity//.scale(0.1, 0.1, 0.1)
+                         //.rotatez(timeAsFloat)
+                         //.rotatex(timeAsFloat / 2.0)
                          .translate(GameState.playerPosition);
+                         
 
         Globals.uniforms[currentImage].view =
-            lookAt(GameState.cameraPosition, 
-                   GameState.playerPosition, 
-                   vec3(0.0, 1.0, 0.0));
+            mat4.look_at(GameState.cameraPosition, 
+                         vec3(0.0, 0.0, 0.0), 
+                         vec3(0.0, 1.0, 0.0));
 
         Globals.uniforms[currentImage].projection = 
-            mat4.perspective(Globals.framebufferWidth, 
+            perspectiveRH(Globals.framebufferWidth, Globals.framebufferHeight, 1.0, 200.0);
+        /*    mat4.perspective(Globals.framebufferWidth, 
                              Globals.framebufferHeight, 
-                             Globals.fieldOfView, 
+                             Globals.verticalFieldOfView, 
                              1.0, 
-                             10.0);
+                             200.0); */
+
+        debug log("Perspective: ", Globals.uniforms[currentImage].projection);
 
         sendDataToBuffer(
             logicalDevice, 
@@ -321,11 +311,6 @@ void main() {
             &Globals.uniforms[currentImage]
         );
     }
-
-    // Record commands
-
-    issueRenderCommands(
-        swapchain, surfaceExtent, pipelineLayout, vertexBuffer.buffer);
 
     // Create sync objects
 
@@ -360,6 +345,34 @@ void main() {
         enforce(fenceCreateResult == VK_SUCCESS);
     }
 
+    import obj;
+    ObjData model = parseObj("./models/cube.obj");
+
+    Vertex[] vertices;
+    vertices.length = model.positions.length;
+    foreach (i; 0 .. vertices.length) {
+        vertices[i].position = model.positions[i];
+        vertices[i].normal   = model.normals[i];
+    }
+
+    // Create vertex buffer
+
+    Buffer vertexBuffer = createBuffer(
+        logicalDevice, 
+        physicalDevice,
+        vertices.length * vertices[0].sizeof,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
+        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+    );
+
+    sendDataToBuffer(logicalDevice, vertexBuffer, vertices.ptr);
+
+    // Record commands
+
+    issueRenderCommands(
+        swapchain, surfaceExtent, pipelineLayout, vertices, vertexBuffer.buffer);
+
     /*
     ---------------------------------------------------------------------------
     --  Main Loop
@@ -368,7 +381,18 @@ void main() {
 
     uint frameNumber = 0;
 
-    while (!glfwWindowShouldClose(window)) {
+    MonoTime frameBeginTime;
+
+    while (!glfwWindowShouldClose(Globals.window)) {
+        frameBeginTime = MonoTime.currTime();
+        scope(exit) {
+            Globals.lastFrameDuration = MonoTime.currTime() - frameBeginTime;
+            //debug if (Globals.lastFrameDuration > Globals.frameDeadline) {
+            //    log("Missed frame deadline of ", Globals.frameDeadline, 
+            //        "! Frame took ", Globals.lastFrameDuration, ".");
+            //}
+        }
+
         ++frameNumber;
         glfwPollEvents();
 
@@ -424,7 +448,7 @@ void main() {
                                         
         enforce(submitResult == VK_SUCCESS);
 
-        VkSwapchainKHR[] swapchains = [swapchain.swapchain];
+        VkSwapchainKHR[1] swapchains = [swapchain.swapchain];
 
         VkPresentInfoKHR presentInfo = {
             waitSemaphoreCount : 1,
@@ -455,7 +479,7 @@ void main() {
                 logicalDevice, 
                 physicalDevice, 
                 surface, 
-                window,
+                Globals.window,
                 vertexBuffer.buffer,
                 pipelineLayout, 
                 descriptorSetLayout,
@@ -463,10 +487,10 @@ void main() {
                 swapchain
             );
 
-            auto extent = physicalDevice.getSurfaceExtent(surface, window);
+            auto extent = physicalDevice.getSurfaceExtent(surface, Globals.window);
 
             issueRenderCommands(
-                swapchain, extent, pipelineLayout, vertexBuffer.buffer);
+                swapchain, extent, pipelineLayout, vertices, vertexBuffer.buffer);
 
             Globals.uniforms.length = swapchain.imageViews.length;
         }

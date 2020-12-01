@@ -1,6 +1,9 @@
 module game;
+
 import glfw3.api;
 import gl3n.linalg;
+
+import globals;
 
 enum GameAction {
     NO_ACTION,
@@ -9,6 +12,7 @@ enum GameAction {
     MOVE_BACKWARDS,
     MOVE_RIGHT,
     PRINT_DEBUG_INFO,
+    QUIT_GAME,
 }
 
 enum MOVEMENT_IMPULSE = 0.01;
@@ -31,6 +35,7 @@ GameAction associatedAction(int key) pure nothrow @nogc {
         case GLFW_KEY_S: return GameAction.MOVE_BACKWARDS;
         case GLFW_KEY_D: return GameAction.MOVE_RIGHT;
         case GLFW_KEY_P: return GameAction.PRINT_DEBUG_INFO;
+        case GLFW_KEY_ESCAPE: return GameAction.QUIT_GAME;
         default: return GameAction.NO_ACTION;
     }
     assert(0);
@@ -61,10 +66,14 @@ void tickGameState() {
         GameState.playerAcceleration.x -= MOVEMENT_IMPULSE;
     }
 
-    if (GameState.actionRequested[GameAction.PRINT_DEBUG_INFO]) {
+    if (true || GameState.actionRequested[GameAction.PRINT_DEBUG_INFO]) {
         import std.experimental.logger;
         debug log("Player position:     ", GameState.playerPosition);
         debug log("Player velocity:     ", GameState.playerVelocity);
         debug log("Player acceleration: ", GameState.playerAcceleration);
+    }
+
+    if (GameState.actionRequested[GameAction.QUIT_GAME]) {
+        glfwSetWindowShouldClose(Globals.window, GLFW_TRUE);
     }
 }

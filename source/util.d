@@ -872,6 +872,7 @@ VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
 void issueRenderCommands(ref SwapchainWithDependents swapchain,
                          in  VkExtent2D              surfaceExtent,
                              VkPipelineLayout        pipelineLayout,
+                             Vertex[]                vertices,
                              VkBuffer                vertexBuffer)
 {
     // Issue commands to the swapchain command buffers
@@ -900,7 +901,9 @@ void issueRenderCommands(ref SwapchainWithDependents swapchain,
         commandBuffer.vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, swapchain.pipeline);
         commandBuffer.vkCmdBindVertexBuffers(0, 1, buffers.ptr, offsets.ptr);
         commandBuffer.vkCmdBindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &swapchain.descriptorSets[i], 0, null);
-        commandBuffer.vkCmdDraw(cast(uint) Globals.vertices.length, 1, 0, 0);
+        
+        commandBuffer.vkCmdDraw(cast(uint) vertices.length, 1, 0, 0);
+
         commandBuffer.vkCmdEndRenderPass();
 
         auto endErrors = vkEndCommandBuffer(commandBuffer);
@@ -1137,26 +1140,34 @@ Buffer[] createUniformBuffers(VkDevice         logicalDevice,
     return ret;
 }
 
-mat4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
+/// Left-handed lookAt function
+mat4 lookAtLH(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
     immutable forward = (cameraPosition - targetPosition).normalized;
     immutable side    = up.cross(forward).normalized;
-    immutable newUp   = forward.cross(side).normalized;
+    immutable newUp   = forward.cross(side);
 
-    // debug log("forward: ", forward);
-    // debug log("side   : ", side);
-    // debug log("newUp  : ", newUp);
+    //debug log("forward: ", forward);
+    //debug log("side   : ", side);
+    //debug log("newUp  : ", newUp);
 
-    mat4 ret = mat4(
+    return mat4(
         vec4(side.x, newUp.x, forward.x, 0.0),
         vec4(side.y, newUp.y, forward.y, 0.0),
         vec4(side.z, newUp.z, forward.z, 0.0),
-        vec4( -dot(cameraPosition, side),
-              -dot(cameraPosition, newUp),
-              -dot(cameraPosition, forward),
+        vec4( -dot(side, cameraPosition),
+              -dot(newUp, cameraPosition),
+              -dot(forward, cameraPosition),
               1.0),
-    );
+    ).transposed;
+} 
 
-    return ret;
+mat4 perspectiveRH(float width, float height, float near, float far) pure {
+    return mat4(
+        vec4(2*near/width, 0, 0, 0),
+        vec4(0, 2*near/height, 0, 0),
+        vec4(0, 0, far/(near-far), -1),
+        vec4(0, 0, near*far/(near-far), 0)
+    ).transposed;
 }
 
 /// Clean up all Vulkan state, ready to shut down the application. Or recreate

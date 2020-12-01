@@ -1,5 +1,6 @@
 module globals;
 
+import glfw3.api;
 import erupted;
 import gl3n.linalg;
 
@@ -10,27 +11,21 @@ struct Globals {
     static ulong currentFrame; /// Latest frame? This might be named better.
 
     static bool  framebufferWasResized = false;
-    static uint  framebufferWidth = 800;
-    static uint  framebufferHeight = 600;
+    static uint  framebufferWidth = 1280;
+    static uint  framebufferHeight = 720;
 
-    static float fieldOfView = 90.0;
+    static float verticalFieldOfView = 60.0;
 
     static MonoTime programT0;
+    static Duration lastFrameDuration;
+
+    static immutable Duration frameDeadline = 2.msecs;
+
+    static GLFWwindow *window;
 
     static VkClearValue[] clearValues = [
         { color        : { float32 : [0.0, 0.0, 0.0, 1.0] } },
         { depthStencil : { depth: 1.0, stencil: 0 } },
-    ];
-
-    static const Vertex[] vertices = [ 
-        // First triangle
-        { position: vec3( 0.0, -0.5,  0.0), colour: vec3(1.0, 0.0, 0.0) },
-        { position: vec3( 0.5,  0.5,  0.0), colour: vec3(0.0, 1.0, 0.0) },
-        { position: vec3(-0.5,  0.5,  0.0), colour: vec3(0.0, 0.0, 1.0) },
-        // Second triangle
-        { position: vec3( 0.0, -0.5, -0.5), colour: vec3(1.0, 0.0, 0.0) },
-        { position: vec3( 0.5,  0.5, -0.5), colour: vec3(0.0, 1.0, 0.0) },
-        { position: vec3(-0.5,  0.5, -0.5), colour: vec3(0.0, 0.0, 1.0) },
     ];
 
     static Uniforms[] uniforms;
@@ -44,7 +39,7 @@ struct Uniforms {
 
 struct Vertex {
     vec3 position;
-    vec3 colour;
+    vec3 normal;
 
     static VkVertexInputBindingDescription getBindingDescription() {
         VkVertexInputBindingDescription ret = {
@@ -67,7 +62,7 @@ struct Vertex {
                 binding  : 0,
                 location : 1,
                 format   : VK_FORMAT_R32G32B32_SFLOAT,
-                offset   : Vertex.colour.offsetof,
+                offset   : Vertex.normal.offsetof,
             }
         ];
         return ret;
