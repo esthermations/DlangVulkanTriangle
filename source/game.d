@@ -19,7 +19,7 @@ enum GameAction {
 enum MOVEMENT_IMPULSE = 0.001;
 
 struct GameState {
-    static vec3 cameraPosition     = vec3(0.0, -5.0, -5.0);
+    static vec3 cameraPosition     = vec3(0.0, -5.0, -1.0);
 
     static vec3 playerPosition     = vec3(0.0, 0.0, 0.0); 
     static vec3 playerVelocity     = vec3(0.0, 0.0, 0.0);

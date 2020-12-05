@@ -288,14 +288,16 @@ void main() {
         Globals.uniforms[currentImage].model =
             mat4.identity.transposed
                          .scale(scaleFactor, scaleFactor, scaleFactor)
-                         //.rotatey(timeAsFloat)
                          .translate(GameState.playerPosition)
                          .transposed;
+
+        import std.math : fmod;
+        GameState.cameraPosition.y = fmod(timeAsFloat, 10.0);
 
         Globals.uniforms[currentImage].view =
             lookAt(GameState.cameraPosition, 
                    GameState.playerPosition, 
-                   vec3(0, 0, 1));
+                   vec3(0, 1, 0));
             //lookAt(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
             //mat4.look_at(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
 
@@ -305,10 +307,10 @@ void main() {
 
         immutable float near        = 1.0;
         immutable float far         = 200.0;
-        immutable float aspectRatio = 1280.0 / 720.0;
+        immutable float aspectRatio = width / height;
 
         Globals.uniforms[currentImage].projection =
-            perspective(60.0, aspectRatio, near, far);
+            perspective(fov, aspectRatio, near, far);
             //mat4.identity;
 
         debug(matrices) {

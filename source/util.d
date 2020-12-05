@@ -387,9 +387,9 @@ VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
 
     VkViewport viewport = {
         x        : 0.0f,
-        y        : 0.0f,
+        y        : swapchainExtent.height,
         width    : swapchainExtent.width,
-        height   : swapchainExtent.height,
+        height   : -1.0f * swapchainExtent.height,
         minDepth : 0.0f,
         maxDepth : 1.0f,
     };
@@ -412,7 +412,7 @@ VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
         polygonMode             : VK_POLYGON_MODE_FILL,
         lineWidth               : 1.0f,
         cullMode                : VK_CULL_MODE_BACK_BIT,
-        frontFace               : VK_FRONT_FACE_CLOCKWISE,
+        frontFace               : VK_FRONT_FACE_COUNTER_CLOCKWISE,
         depthBiasEnable         : VK_FALSE,
         depthBiasClamp          : 0.0f,
     };
@@ -1241,7 +1241,7 @@ mat4 perspective(float top, float bottom, float left, float right, float near, f
 
     mat4 ret = mat4(
         2.0 * (near/dx), 0,               (right+left)/dx, 0,
-        0,               -2.0 * (near/dy), (top+bottom)/dy, 0,
+        0,               2.0 * (near/dy), (top+bottom)/dy, 0,
         0,               0,               -(far+near)/dz,  -2.0*far*near/dz,
         0,               0,               -1,              0,
     );
