@@ -8,20 +8,10 @@ import std.experimental.logger;
 import std.exception : enforce;
 import gl3n.linalg;
 
-struct MtlData {
-    string name;
-    vec3   ambientLight;
-    vec3   diffuseLight;
-    vec3   specularLight;
-    ulong  firstIndex;
-    ulong  numIndices;
-}
-
 struct ObjData {
-    vec3[]    positions;
-    vec3[]    normals;
-    vec2[]    texcoords;
-    //MtlData[] materials;
+    vec3[] positions;
+    vec3[] normals;
+    vec2[] texcoords;
 }
 
 ObjData parseObj(string objFilePath) {
@@ -33,7 +23,7 @@ ObjData parseObj(string objFilePath) {
 
     Vector!(float, N) stringsToVec(int N)(string[] splitString) 
     {
-        import std.format;
+        import std.format : format;
         enforce(splitString.length == N, "Vector must have %s components".format(N));
         import std.conv : to;
         Vector!(float, N) ret;
@@ -52,7 +42,7 @@ ObjData parseObj(string objFilePath) {
     foreach (splitLine; objFile.byLineCopy.map!(strip)
                                           .map!(s => s.split(" "))) 
     {
-        debug log("Parsing line: ", splitLine);
+        //debug log("Parsing line: ", splitLine);
         if (splitLine.length == 0 || splitLine[0].startsWith("#")) {
             continue;
         }
@@ -66,13 +56,13 @@ ObjData parseObj(string objFilePath) {
                 foreach (string face; splitLine[1 .. $]) {
                     // face will be a string like "1/2/3" or "1//3"
 
-                    debug log("Parsing face: ", face);
+                    //debug log("Parsing face: ", face);
 
                     import std.conv : to;
                     auto indices = face.split("/").map!(s => s.to!ulong)
                                                   .map!(i => i-1);
 
-                    debug log("  -> Got indices ", indices);
+                    //debug log("  -> Got indices ", indices);
 
                     enforce(indices.length == 2 || indices.length == 3);
 

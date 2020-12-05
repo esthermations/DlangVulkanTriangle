@@ -15,10 +15,10 @@ enum GameAction {
     QUIT_GAME,
 }
 
-enum MOVEMENT_IMPULSE = 0.01;
+enum MOVEMENT_IMPULSE = 0.001;
 
 struct GameState {
-    static vec3 cameraPosition     = vec3(0.0, 1.0, +1.0);
+    static vec3 cameraPosition     = vec3(0.0, 1.0, -1.0);
 
     static vec3 playerPosition     = vec3(0.0, 0.0, 0.0); 
     static vec3 playerVelocity     = vec3(0.0, 0.0, 0.0);
@@ -47,6 +47,9 @@ void tickGameState() {
     GameState.playerPosition += GameState.playerVelocity;
     GameState.playerVelocity += GameState.playerAcceleration;
 
+    GameState.cameraPosition = 
+        GameState.playerPosition + vec3(0, 5, 5);
+
     // Set acceleration based on player input
     GameState.playerAcceleration = vec3(0);
 
@@ -66,7 +69,7 @@ void tickGameState() {
         GameState.playerAcceleration.x -= MOVEMENT_IMPULSE;
     }
 
-    if (true || GameState.actionRequested[GameAction.PRINT_DEBUG_INFO]) {
+    if (GameState.actionRequested[GameAction.PRINT_DEBUG_INFO]) {
         import std.experimental.logger;
         debug log("Player position:     ", GameState.playerPosition);
         debug log("Player velocity:     ", GameState.playerVelocity);

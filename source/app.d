@@ -283,27 +283,40 @@ void main() {
         import game;
         import gl3n.linalg;
 
-        Globals.uniforms[currentImage].model = 
-            mat4.identity//.scale(0.1, 0.1, 0.1)
-                         //.rotatez(timeAsFloat)
-                         //.rotatex(timeAsFloat / 2.0)
-                         .translate(GameState.playerPosition);
-                         
+        float scaleFactor = 1.00;
+
+        Globals.uniforms[currentImage].model =
+            mat4.identity.transposed
+                         .scale(scaleFactor, scaleFactor, scaleFactor)
+                         //.rotatey(timeAsFloat)
+                         .translate(GameState.playerPosition)
+                         .transposed;
 
         Globals.uniforms[currentImage].view =
-            mat4.look_at(GameState.cameraPosition, 
-                         vec3(0.0, 0.0, 0.0), 
-                         vec3(0.0, 1.0, 0.0));
+            lookAt(vec3(0, 2, -2), GameState.playerPosition, vec3(0, 0, 1));
+            //lookAt(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
+            //mat4.look_at(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
 
-        Globals.uniforms[currentImage].projection = 
-            perspectiveRH(Globals.framebufferWidth, Globals.framebufferHeight, 1.0, 200.0);
-        /*    mat4.perspective(Globals.framebufferWidth, 
-                             Globals.framebufferHeight, 
-                             Globals.verticalFieldOfView, 
-                             1.0, 
-                             200.0); */
+        alias width  = Globals.framebufferWidth;
+        alias height = Globals.framebufferHeight;
+        alias fov    = Globals.verticalFieldOfView;
 
-        debug log("Perspective: ", Globals.uniforms[currentImage].projection);
+        immutable float near        = 1.0;
+        immutable float far         = 200.0;
+        immutable float aspectRatio = 1280.0 / 720.0;
+
+        Globals.uniforms[currentImage].projection =
+            perspective(60.0, aspectRatio, near, far);
+            //mat4.identity;
+
+        writeln("model:");
+        printMatrix(Globals.uniforms[currentImage].model);
+
+        writeln("view:");
+        printMatrix(Globals.uniforms[currentImage].view);
+
+        writeln("proj:");
+        printMatrix(Globals.uniforms[currentImage].projection);
 
         sendDataToBuffer(
             logicalDevice, 
@@ -462,8 +475,8 @@ void main() {
         auto queuePresentResult = vkQueuePresentKHR(presentQueue, &presentInfo);
 
         switch (queuePresentResult) {
-            case VK_ERROR_OUT_OF_DATE_KHR: debug log("Out of date!");
-            case VK_SUBOPTIMAL_KHR: debug log("Suboptimal!");
+            case VK_ERROR_OUT_OF_DATE_KHR: debug log("Out of date!"); break;
+            case VK_SUBOPTIMAL_KHR: debug log("Suboptimal!"); break;
             default: break;
         }
 
@@ -514,4 +527,3 @@ void main() {
                   imageAvailableSemaphores ~ renderFinishedSemaphores, 
                   inFlightFences);
 }
-

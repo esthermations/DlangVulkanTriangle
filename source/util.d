@@ -15,6 +15,15 @@ import globals;
     Utility functions for the game engine, currently mostly Vulkan-related.
 */
 
+void printMatrix(mat4 mat, bool rowMajor = true) {
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            writef("\t%+.3f", rowMajor ? mat[j][i] : mat[i][j]);
+        }
+        writeln;
+    }
+}
+
 PFN_vkCreateDebugUtilsMessengerEXT  vkCreateDebugUtilsMessengerEXT;
 PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
 
@@ -1140,34 +1149,141 @@ Buffer[] createUniformBuffers(VkDevice         logicalDevice,
     return ret;
 }
 
-/// Left-handed lookAt function
-mat4 lookAtLH(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
-    immutable forward = (cameraPosition - targetPosition).normalized;
-    immutable side    = up.cross(forward).normalized;
-    immutable newUp   = forward.cross(side);
+mat4 abs(mat4 m) pure {
+    import std.math : abs;
+    mat4 ret;
+    foreach (i; 0 .. 4) {
+        foreach (j; 0 .. 4) {
+            ret[i][j] = abs(m[i][j]);
+        }
+    }
+    return ret;
+}
+
+unittest {
+    mat4 m = mat4(-1);
+    mat4 result = abs(m);
+    assert(result == mat4(1));
+}
+
+bool approxEqual(mat4 a, mat4 b) pure {
+    immutable epsilon = 0.001;
+    immutable absDiff = abs(a - b);
+    foreach (i; 0 .. 4) {
+        foreach (j; 0 .. 4) {
+            if (absDiff[i][j] > epsilon) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+unittest {
+    assert(approxEqual(mat4(1.0), mat4(1.0001)));
+}
+
+mat4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
+
+    vec3 normalise(vec3 v) pure {
+        return v.normalized;
+    }
+
+    immutable forward = normalise(cameraPosition - targetPosition);
+    immutable side    = normalise(cross(up, forward));
+    immutable newUp   = normalise(cross(forward, side));
 
     //debug log("forward: ", forward);
     //debug log("side   : ", side);
     //debug log("newUp  : ", newUp);
 
     return mat4(
-        vec4(side.x, newUp.x, forward.x, 0.0),
-        vec4(side.y, newUp.y, forward.y, 0.0),
-        vec4(side.z, newUp.z, forward.z, 0.0),
-        vec4( -dot(side, cameraPosition),
-              -dot(newUp, cameraPosition),
-              -dot(forward, cameraPosition),
-              1.0),
-    ).transposed;
+        side.x, newUp.x, forward.x, 0.0,
+        side.y, newUp.y, forward.y, 0.0,
+        side.z, newUp.z, forward.z, 0.0,
+        -dot(cameraPosition, side),
+        -dot(cameraPosition, newUp),
+        -dot(cameraPosition, forward),
+        1.0,
+    );
 } 
 
-mat4 perspectiveRH(float width, float height, float near, float far) pure {
-    return mat4(
-        vec4(2*near/width, 0, 0, 0),
-        vec4(0, 2*near/height, 0, 0),
-        vec4(0, 0, far/(near-far), -1),
-        vec4(0, 0, near*far/(near-far), 0)
+unittest {
+    immutable view = lookAt(vec3(2.0, 2.0, 2.0), vec3(0, 0, 0), vec3(0, 0, 1));
+    immutable expected = mat4( 
+        -0.707, -0.408, +0.577, +0.000,
+        +0.707, -0.408, +0.577, +0.000,
+        +0.000, +0.816, +0.577, +0.000,
+        -0.000, -0.000, -3.464, +1.000,
+     );
+    assert(approxEqual(view, expected));
+}
+
+unittest {
+    immutable view = lookAt(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
+    immutable expected = mat4(
+        +0.000, +0.000, +1.000, -0.000,
+        +1.000, +0.000, +0.000, -0.000,
+        +0.000, +1.000, +0.000, -5.000,
+        +0.000, +0.000, +0.000, +1.000,
     ).transposed;
+    assert(approxEqual(view, expected));
+}
+
+mat4 perspective(float top, float bottom, float left, float right, float near, float far) pure {
+    immutable dx = right - left;    
+    immutable dy = top - bottom;
+    immutable dz = far - near;
+    mat4 ret = mat4(
+        2.0 * (near/dx), 0,               (right+left)/dx, 0,
+        0,               2.0 * (near/dy), (top+bottom)/dy, 0,
+        0,               0,               -(far+near)/dz,  -2.0*far*near/dz,
+        0,               0,               -1,              0,
+    );
+    return ret;
+}
+
+mat4 perspective(float fovDegrees, float aspectRatio, float near, float far) pure {
+    import gl3n.math : radians;
+    import std.math  : tan;
+    immutable top    = (near * tan(0.5 * radians(fovDegrees)));
+    immutable bottom = -top;
+    immutable right  = top * aspectRatio;
+    immutable left   = -right;
+    return perspective(top, bottom, left, right, near, far);
+}
+
+/+
+mat4 perspective(float vFovDegrees, float aspectRatio, float zNear, float zFar) pure {
+    import std.math  : tan, PI;
+    import gl3n.math : radians;
+
+    immutable vFov = radians(vFovDegrees);
+
+    immutable h = 1.0 / tan(vFov / 2.0);
+    immutable w = h / aspectRatio;
+ 
+    auto ret = mat4(
+        w,  0, 0,                       0,
+        0, -h, 0,                       0,
+        0,  0, zFar/(zNear-zFar),      -1,
+        0,  0, zNear*zFar/(zNear-zFar), 0,
+    );
+
+    return ret;
+}
++/
+
+unittest {
+    immutable aspectRatio = 1280.0 / 720.0;
+    immutable proj = perspective(60.0, aspectRatio, 1.0, 200.0);
+    immutable expected = mat4(
+        +0.97428, +0.00000, +0.00000, +0.00000,
+        +0.00000, +1.73205, +0.00000, +0.00000,
+        +0.00000, +0.00000, -1.01005, -2.01005,
+        +0.00000, +0.00000, -1.00000, +0.00000,
+    );
+    assert(approxEqual(proj, expected));
 }
 
 /// Clean up all Vulkan state, ready to shut down the application. Or recreate
