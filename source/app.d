@@ -49,7 +49,12 @@ void main() {
     ];
 
     const(char)*[] requiredDeviceExtensions = [
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_MAINTENANCE1_EXTENSION_NAME
+    ];
+
+    const(char)*[] requiredInstanceExtensions = [
+        VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
     ];
 
     import erupted.vulkan_lib_loader;
@@ -59,7 +64,7 @@ void main() {
 
     VkApplicationInfo appInfo = {
         pApplicationName : "Hello Triangle",
-        apiVersion       : VK_MAKE_VERSION(1, 0, 2),
+        apiVersion       : VK_MAKE_VERSION(1, 1, 0),
     };
 
     /*
@@ -103,19 +108,14 @@ void main() {
     auto glfwExtensions = 
         glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
-    const(char)*[] extensions;
-    extensions.length = glfwExtensionCount + 1;
-
     for (auto i = 0; i < glfwExtensionCount; ++i) {
-        extensions[i] = glfwExtensions[i];
+        requiredInstanceExtensions ~= glfwExtensions[i];
     }
-
-    extensions[$ - 1] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
 
     VkInstanceCreateInfo instanceCreateInfo = {
         pApplicationInfo        : &appInfo, 
-        enabledExtensionCount   : cast(uint) extensions.length, 
-        ppEnabledExtensionNames : extensions.ptr,
+        enabledExtensionCount   : cast(uint) requiredInstanceExtensions.length, 
+        ppEnabledExtensionNames : requiredInstanceExtensions.ptr,
         enabledLayerCount       : cast(uint) requiredLayers.length,
         ppEnabledLayerNames     : requiredLayers.ptr,
     };
@@ -293,7 +293,9 @@ void main() {
                          .transposed;
 
         Globals.uniforms[currentImage].view =
-            lookAt(vec3(0, 2, -2), GameState.playerPosition, vec3(0, 0, 1));
+            lookAt(GameState.cameraPosition, 
+                   GameState.playerPosition, 
+                   vec3(0, 0, 1));
             //lookAt(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
             //mat4.look_at(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
 
@@ -309,14 +311,16 @@ void main() {
             perspective(60.0, aspectRatio, near, far);
             //mat4.identity;
 
-        writeln("model:");
-        printMatrix(Globals.uniforms[currentImage].model);
+        debug(matrices) {
+            writeln("model:");
+            printMatrix(Globals.uniforms[currentImage].model);
 
-        writeln("view:");
-        printMatrix(Globals.uniforms[currentImage].view);
+            writeln("view:");
+            printMatrix(Globals.uniforms[currentImage].view);
 
-        writeln("proj:");
-        printMatrix(Globals.uniforms[currentImage].projection);
+            writeln("proj:");
+            printMatrix(Globals.uniforms[currentImage].projection);
+        }
 
         sendDataToBuffer(
             logicalDevice, 
@@ -359,7 +363,8 @@ void main() {
     }
 
     import obj;
-    ObjData model = parseObj("./models/cube.obj");
+    //ObjData model = parseObj("./models/cube.obj");
+    ObjData model = parseObj("./models/viking_room.obj");
 
     Vertex[] vertices;
     vertices.length = model.positions.length;

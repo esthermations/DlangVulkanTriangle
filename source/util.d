@@ -1234,9 +1234,14 @@ mat4 perspective(float top, float bottom, float left, float right, float near, f
     immutable dx = right - left;    
     immutable dy = top - bottom;
     immutable dz = far - near;
+
+    // NOTE: [1][1] is reflected here (* by -1) so that we can use Y-up in our
+    // game logic, though Vulkan renders assuming Y-down. We just flip it in the
+    // projection.
+
     mat4 ret = mat4(
         2.0 * (near/dx), 0,               (right+left)/dx, 0,
-        0,               2.0 * (near/dy), (top+bottom)/dy, 0,
+        0,               -2.0 * (near/dy), (top+bottom)/dy, 0,
         0,               0,               -(far+near)/dz,  -2.0*far*near/dz,
         0,               0,               -1,              0,
     );
