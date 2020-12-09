@@ -16,5 +16,4 @@ void main() {
     outColour   = abs(inNormal);
     //outColour   = vec3(inPosition.z * 0.7 + 0.3);
     gl_Position = ubo.projection * ubo.view * ubo.model * vec4(inPosition, 1.0);
-    //gl_Position = vec4(inPosition, 1.0) * ubo.model * ubo.view * ubo.projection;
 }

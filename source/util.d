@@ -15,6 +15,21 @@ import globals;
     Utility functions for the game engine, currently mostly Vulkan-related.
 */
 
+enum Y_UP        = +1.0f; 
+enum Y_DOWN      = -Y_UP; 
+enum X_LEFT      = -1.0f;
+enum X_RIGHT     = -X_LEFT;
+enum Z_BACKWARDS = +1.0f;
+enum Z_FORWARDS  = -Z_BACKWARDS;
+
+import std.math : fabs;
+immutable up        = ((float f) => Y_UP        * fabs(f));
+immutable down      = ((float f) => Y_DOWN      * fabs(f));
+immutable left      = ((float f) => X_LEFT      * fabs(f));
+immutable right     = ((float f) => X_RIGHT     * fabs(f));
+immutable forwards  = ((float f) => Z_FORWARDS  * fabs(f));
+immutable backwards = ((float f) => Z_BACKWARDS * fabs(f));
+
 void printMatrix(mat4 mat, bool rowMajor = true) {
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
@@ -385,6 +400,8 @@ VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
         primitiveRestartEnable : VK_FALSE,
     };
 
+    /// NOTE that our viewport is flipped upside-down so we can use Y-up, where
+    /// Vulkan normally uses Y-down.
     VkViewport viewport = {
         x        : 0.0f,
         y        : swapchainExtent.height,
@@ -448,7 +465,7 @@ VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
         [vertStageCreateInfo, fragStageCreateInfo];
 
     VkGraphicsPipelineCreateInfo createInfo = {
-        stageCount          : 2,
+        stageCount          : cast(uint) shaderStages.length,
         pStages             : shaderStages.ptr,
         pVertexInputState   : &vertexInputCreateInfo,
         pInputAssemblyState : &inputAssemblyCreateInfo,
@@ -569,6 +586,7 @@ VkRenderPass createRenderPass(VkDevice logicalDevice,
 struct QueueFamilies {
     Nullable!uint graphics;
     Nullable!uint present;
+    Nullable!uint transfer;
 
     /// Are all queue families available?
     bool isComplete() {
@@ -580,7 +598,7 @@ struct QueueFamilies {
 /// members of QueueFamilies are nullable -- this function may fail to find all
 /// the queue families in that struct. If it can't find them, they will be null.
 QueueFamilies selectQueueFamilies(VkPhysicalDevice physicalDevice, 
-                                  VkSurfaceKHR surface) 
+                                  VkSurfaceKHR     surface) 
 {
     VkQueueFamilyProperties[] queueFamilies;
     uint queueFamilyCount = 0;
@@ -593,10 +611,10 @@ QueueFamilies selectQueueFamilies(VkPhysicalDevice physicalDevice,
                                              queueFamilies.ptr);
 
     QueueFamilies ret;
+
+    debug log("Queue families: ", queueFamilies);
     
     foreach (i, family; queueFamilies) {
-        // Select graphics family
-
         auto supportsGraphics = family.queueFlags & VK_QUEUE_GRAPHICS_BIT;
 
         if (supportsGraphics) {
@@ -615,8 +633,16 @@ QueueFamilies selectQueueFamilies(VkPhysicalDevice physicalDevice,
             ret.present = cast(uint) i;
         }
 
+        auto supportsTransfer = 
+            (family.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+            !(family.queueFlags & VK_QUEUE_GRAPHICS_BIT);
+
+        if (supportsTransfer) {
+            ret.transfer = cast(uint) i;
+        }
+
         if (ret.isComplete) {
-            //debug writeln("Using queues ", ret);
+            debug log("Using queues ", ret);
             return ret;
         }
     }
@@ -753,7 +779,7 @@ struct SwapchainSupportDetails {
 }
 
 SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice physicalDevice, 
-                                              VkSurfaceKHR surface) 
+                                              VkSurfaceKHR     surface) 
 {
     SwapchainSupportDetails ret;
 
@@ -924,6 +950,17 @@ struct Buffer {
     VkBuffer       buffer;
     VkDeviceMemory memory;
     ulong          size;
+
+    void sendData(T)(VkDevice logicalDevice, T[] data) 
+        in (data.length != 0)
+        in (data.length * T.sizeof <= this.size)
+    {
+        void *map;
+        vkMapMemory(logicalDevice, this.memory, 0, this.size, 0, &map);
+        import core.stdc.string : memcpy;
+        memcpy(map, data.ptr, data.length * T.sizeof);
+        vkUnmapMemory(logicalDevice, this.memory);
+    }
 }
 
 Buffer createBuffer(VkDevice              logicalDevice,
@@ -971,7 +1008,6 @@ Buffer createBuffer(VkDevice              logicalDevice,
     return ret;
 }
 
-   
 uint findMemoryType(VkPhysicalDevice physicalDevice, 
                     uint typeFilter, 
                     VkMemoryPropertyFlags requestedProperties) 
@@ -993,15 +1029,6 @@ uint findMemoryType(VkPhysicalDevice physicalDevice,
 
     enforce(false);
     return 0;
-}
-
-
-void sendDataToBuffer(T)(VkDevice logicalDevice, Buffer buffer, T *data) {
-    void *map;
-    vkMapMemory(logicalDevice, buffer.memory, 0, buffer.size, 0, &map);
-    import core.stdc.string : memcpy;
-    memcpy(map, data, buffer.size);
-    vkUnmapMemory(logicalDevice, buffer.memory);
 }
 
 VkDescriptorPool createDescriptorPool(VkDevice logicalDevice) {

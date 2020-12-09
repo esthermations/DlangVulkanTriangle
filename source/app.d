@@ -3,9 +3,11 @@ import std.exception;
 import std.experimental.logger;
 import erupted;
 import glfw3.api;
+import gl3n.linalg;
 
 import util;
 import globals;
+import game;
 
 /// How many frames in advance we should allow Vulkan to render.
 enum MAX_FRAMES_IN_FLIGHT = 2;
@@ -14,6 +16,22 @@ void main() {
 
     import core.time;
     Globals.programT0 = MonoTime.currTime();
+
+    auto camera = Game.createEntity;
+    Game.position    [camera] = vec3(0.0, 5.up, 5.backwards);
+
+    auto theStranger = Game.createEntity;
+    Game.position    [theStranger] = vec3(0);
+    Game.velocity    [theStranger] = vec3(0);
+    Game.acceleration[theStranger] = vec3(0);
+
+    auto player = Game.createEntity;
+    Game.position    [player] = vec3(0);
+    Game.velocity    [player] = vec3(0);
+    Game.acceleration[player] = vec3(0);
+
+    Game.playerEntity = player;
+
 
     glfwInit();
     scope (exit) glfwTerminate();
@@ -150,6 +168,7 @@ void main() {
 
     // Create the device queue
     QueueFamilies queueFamilies = selectQueueFamilies(physicalDevice, surface);
+    enforce(queueFamilies.isComplete);
 
     static float[1] queuePriorities = [1.0];
     
@@ -195,9 +214,11 @@ void main() {
 
     VkQueue graphicsQueue;
     VkQueue presentQueue;
+    //VkQueue transferQueue;
 
     vkGetDeviceQueue(logicalDevice, queueFamilies.graphics.get, 0, &graphicsQueue);
     vkGetDeviceQueue(logicalDevice, queueFamilies.present.get, 0, &presentQueue);
+    //vkGetDeviceQueue(logicalDevice, queueFamilies.transfer.get, 0, &transferQueue);
 
     VkDescriptorSetLayout descriptorSetLayout;
 
@@ -280,38 +301,28 @@ void main() {
         auto duration = to!TickDuration(currentTime - Globals.programT0);
         const float timeAsFloat = core.time.to!("seconds", float)(duration);
 
-        import game;
-        import gl3n.linalg;
-
-        float scaleFactor = 1.00;
+        float scaleFactor = 10.00;
 
         Globals.uniforms[currentImage].model =
-            mat4.identity.transposed
-                         .scale(scaleFactor, scaleFactor, scaleFactor)
-                         .translate(GameState.playerPosition)
+            mat4.identity.scale(scaleFactor, scaleFactor, scaleFactor)
+                         .translate(Game.position[Game.playerEntity].get)
                          .transposed;
 
         import std.math : fmod;
-        GameState.cameraPosition.y = fmod(timeAsFloat, 10.0);
 
         Globals.uniforms[currentImage].view =
-            lookAt(GameState.cameraPosition, 
-                   GameState.playerPosition, 
-                   vec3(0, 1, 0));
-            //lookAt(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
-            //mat4.look_at(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
+            lookAt(Game.position[camera].get, vec3(0), vec3(0, 1, 0));
 
-        alias width  = Globals.framebufferWidth;
-        alias height = Globals.framebufferHeight;
-        alias fov    = Globals.verticalFieldOfView;
-
-        immutable float near        = 1.0;
-        immutable float far         = 200.0;
-        immutable float aspectRatio = width / height;
+        immutable float near = 1.0;
+        immutable float far  = 200.0;
 
         Globals.uniforms[currentImage].projection =
-            perspective(fov, aspectRatio, near, far);
-            //mat4.identity;
+            perspective(
+                Globals.verticalFieldOfView, 
+                Globals.aspectRatio, 
+                near, 
+                far
+            );
 
         debug(matrices) {
             writeln("model:");
@@ -323,12 +334,9 @@ void main() {
             writeln("proj:");
             printMatrix(Globals.uniforms[currentImage].projection);
         }
-
-        sendDataToBuffer(
-            logicalDevice, 
-            uniformBuffer,
-            &Globals.uniforms[currentImage]
-        );
+        
+        uniformBuffer.sendData(logicalDevice, 
+                               Globals.uniforms[currentImage .. currentImage + 1]);
     }
 
     // Create sync objects
@@ -366,7 +374,7 @@ void main() {
 
     import obj;
     //ObjData model = parseObj("./models/cube.obj");
-    ObjData model = parseObj("./models/viking_room.obj");
+    ObjData model = parseObj("./models/Barrel02.obj");
 
     Vertex[] vertices;
     vertices.length = model.positions.length;
@@ -386,7 +394,7 @@ void main() {
           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
     );
 
-    sendDataToBuffer(logicalDevice, vertexBuffer, vertices.ptr);
+    vertexBuffer.sendData(logicalDevice, vertices);
 
     // Record commands
 
@@ -407,10 +415,10 @@ void main() {
         frameBeginTime = MonoTime.currTime();
         scope(exit) {
             Globals.lastFrameDuration = MonoTime.currTime() - frameBeginTime;
-            //debug if (Globals.lastFrameDuration > Globals.frameDeadline) {
-            //    log("Missed frame deadline of ", Globals.frameDeadline, 
-            //        "! Frame took ", Globals.lastFrameDuration, ".");
-            //}
+            debug if (Globals.lastFrameDuration > Globals.frameDeadline) {
+                log("Missed frame deadline of ", Globals.frameDeadline, 
+                    "! Frame took ", Globals.lastFrameDuration, ".");
+            }
         }
 
         ++frameNumber;
@@ -461,7 +469,7 @@ void main() {
         updateUniforms(logicalDevice, swapchain.uniformBuffers[imageIndex], imageIndex);
 
         import game;
-        tickGameState();
+        Game.tick();
 
         auto submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, 
                                           inFlightFences[Globals.currentFrame]);

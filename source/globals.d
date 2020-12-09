@@ -14,7 +14,11 @@ struct Globals {
     static uint  framebufferWidth = 1280;
     static uint  framebufferHeight = 720;
 
-    static float verticalFieldOfView = 60.0;
+    static float aspectRatio() {
+        return cast(float) framebufferWidth / cast(float) framebufferHeight;
+    }
+
+    static float verticalFieldOfView = 10.0;
 
     static MonoTime programT0;
     static Duration lastFrameDuration;
