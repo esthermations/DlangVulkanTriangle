@@ -24,7 +24,8 @@ void keyPressed(GLFWwindow *window, int key, int scancode, int keyAction, int) {
     auto actionIsDesired = (keyAction == GLFW_PRESS || 
                             keyAction == GLFW_REPEAT);
 
-    Game.actionRequested[gameAction] = actionIsDesired;
+    Frame *frame = glfwGetWindowUserPointer();
+    frame.actionRequested[gameAction] = actionIsDesired;
 
     debug log("Action ", gameAction, " => ", actionIsDesired);
 }

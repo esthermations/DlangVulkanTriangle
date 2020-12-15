@@ -4,6 +4,7 @@ import glfw3.api;
 import gl3n.linalg; 
 import globals;
 import util;
+import renderer;
 
 enum GameAction {
     NO_ACTION,
@@ -19,102 +20,140 @@ enum GameAction {
 
 enum MOVEMENT_IMPULSE = 0.001;
 
-struct Game {
-
-    static uint createEntity();
-
+struct Frame {
     import std.typecons : Nullable;
 
-    static uint playerEntity;
+    // Renderer state
 
-    static Nullable!vec3[] position;
-    static Nullable!vec3[] velocity;
-    static Nullable!vec3[] acceleration;
+    Uniforms uniforms;
+
+    // Components
+
+    Nullable!vec3[]  position;
+    Nullable!vec3[]  velocity;
+    Nullable!vec3[]  acceleration;
+    Nullable!float[] scale;
+    Nullable!mat4[]  viewMatrix;
 
     invariant(position.length == velocity.length);
     invariant(position.length == acceleration.length);
+    invariant(position.length == scale.length);
+    invariant(position.length == viewMatrix.length);
 
-    static uint createEntity()
-        out (ret; position.length == ret + 1)
+    // Entities
+
+    uint playerEntity;
+
+    uint createEntity()
+        out (ret; this.position.length == ret + 1)
     {
         static uint nextEntityID = 0;
 
-        Game.position.length     = 1 + nextEntityID;
-        Game.velocity.length     = 1 + nextEntityID;
-        Game.acceleration.length = 1 + nextEntityID;
+        this.position.length     = 1 + nextEntityID;
+        this.velocity.length     = 1 + nextEntityID;
+        this.acceleration.length = 1 + nextEntityID;
+        this.scale.length        = 1 + nextEntityID;
+        this.viewMatrix.length   = 1 + nextEntityID;
 
         return nextEntityID++;
     }
 
+    // Player input
+
     /// Has the player requested the specified action this frame?
-    static bool[GameAction.max + 1] actionRequested = [false];
+    bool[GameAction.max + 1] actionRequested = [false];
+}
 
-    static void tick() {
+Frame tick(Frame previousFrame) pure {
+    import std.algorithm : map, fold, setIntersection, each;
+    import std.experimental.logger;
 
-        import std.algorithm : map, fold, setIntersection, each;
+    Frame nextFrame = {
+        playerEntity    : previousFrame.playerEntity,
+        position        : previousFrame.position,
+        velocity        : previousFrame.velocity,
+        acceleration    : previousFrame.acceleration,
+        actionRequested : [false],
+    };
+
+    glfwSetWindowUserPointer(Globals.window, &nextFrame);
+
+    // set of all entities that have acceleration and velocity
+
+    //auto ents = query(Game.velocity, Game.acceleration, Game.fleebleBoo, Game.nintendo64);
+
+    {
+        auto velEnts = entitiesWithComponent(previousFrame.velocity);
+        auto accEnts = entitiesWithComponent(previousFrame.acceleration);
+        auto ents    = setIntersection(velEnts, accEnts);
+        debug log("updateVelocity: ", ents);
+        foreach (e; ents) {
+            nextFrame.velocity[e] += previousFrame.acceleration[e];
+        }
+    }
+
+    {
+        auto posEnts = entitiesWithComponent(previousFrame.position);
+        auto velEnts = entitiesWithComponent(previousFrame.velocity);
+        auto ents    = setIntersection(posEnts, velEnts);
+        debug log("updatePosition: ", ents);
+        foreach (e; ents) {
+            nextFrame.position[e] += previousFrame.velocity[e];
+        }
+    }
+
+    {
+        auto posEnts = entitiesWithComponent(previousFrame.position);
+        auto sclEnts = entitiesWithComponent(previousFrame.scale);
+        auto ents    = setIntersection(posEnts, sclEnts);
+        debug log("updateViewMatrix: ", ents);
+        foreach (e; ents) {
+            auto scale    = previousFrame.scale[e];
+            auto position = previousFrame.position[e];
+            nextFrame.viewMatrix[e] = mat4.identity.scale(scale, scale, scale)
+                                                   .translate(position)
+                                                   .transposed();
+        }
+    }
+
+    glfwPollEvents();
+
+    // Set player's acceleration based on player input
+    nextFrame.acceleration[playerEntity] = vec3(0);
+
+    if (nextFrame.actionRequested[nextFrameAction.MOVE_FORWARDS]) {
+        nextFrame.acceleration[playerEntity].get.z += MOVEMENT_IMPULSE.forwards;
+    }
+
+    if (nextFrame.actionRequested[nextFrameAction.MOVE_BACKWARDS]) {
+        nextFrame.acceleration[playerEntity].get.z += MOVEMENT_IMPULSE.backwards;
+    }
+
+    if (nextFrame.actionRequested[nextFrameAction.MOVE_RIGHT]) {
+        nextFrame.acceleration[playerEntity].get.x += MOVEMENT_IMPULSE.right;
+    }
+
+    if (nextFrame.actionRequested[nextFrameAction.MOVE_LEFT]) {
+        nextFrame.acceleration[playerEntity].get.x += MOVEMENT_IMPULSE.left;
+    }
+
+    if (nextFrame.actionRequested[nextFrameAction.MOVE_UP]) {
+        nextFrame.acceleration[playerEntity].get.y += MOVEMENT_IMPULSE.up;
+    }
+
+    if (nextFrame.actionRequested[nextFrameAction.MOVE_DOWN]) {
+        nextFrame.acceleration[playerEntity].get.y += MOVEMENT_IMPULSE.down;
+    }
+
+    if (nextFrame.actionRequested[nextFrameAction.PRINT_DEBUG_INFO]) {
         import std.experimental.logger;
+        debug log("Player position:     ", nextFrame.position[playerEntity].get);
+        debug log("Player velocity:     ", nextFrame.velocity[playerEntity].get);
+        debug log("Player acceleration: ", nextFrame.acceleration[playerEntity].get);
+    }
 
-        // set of all entities that have acceleration and velocity
-
-        //auto ents = query(Game.velocity, Game.acceleration, Game.fleebleBoo, Game.nintendo64);
-
-        {
-            auto velEnts = entitiesWithComponent(Game.velocity);
-            auto accEnts = entitiesWithComponent(Game.acceleration);
-            auto ents = setIntersection(velEnts, accEnts);
-            debug log(ents);
-            foreach (e; ents) {
-                Game.velocity[e] += Game.acceleration[e];
-            }
-        }
-
-        {
-            auto posEnts = entitiesWithComponent(Game.position);
-            auto velEnts = entitiesWithComponent(Game.velocity);
-            auto ents = setIntersection(posEnts, velEnts);
-            debug log(ents);
-            foreach (e; ents) {
-                Game.position[e] += Game.velocity[e];
-            }
-        }
-
-        // Set player's acceleration based on player input
-        Game.acceleration[playerEntity] = vec3(0);
-
-        if (Game.actionRequested[GameAction.MOVE_FORWARDS]) {
-            Game.acceleration[playerEntity].get.z += MOVEMENT_IMPULSE.forwards;
-        }
-
-        if (Game.actionRequested[GameAction.MOVE_BACKWARDS]) {
-            Game.acceleration[playerEntity].get.z += MOVEMENT_IMPULSE.backwards;
-        }
-
-        if (Game.actionRequested[GameAction.MOVE_RIGHT]) {
-            Game.acceleration[playerEntity].get.x += MOVEMENT_IMPULSE.right;
-        }
-
-        if (Game.actionRequested[GameAction.MOVE_LEFT]) {
-            Game.acceleration[playerEntity].get.x += MOVEMENT_IMPULSE.left;
-        }
-
-        if (Game.actionRequested[GameAction.MOVE_UP]) {
-            Game.acceleration[playerEntity].get.y += MOVEMENT_IMPULSE.up;
-        }
-
-        if (Game.actionRequested[GameAction.MOVE_DOWN]) {
-            Game.acceleration[playerEntity].get.y += MOVEMENT_IMPULSE.down;
-        }
-
-        if (Game.actionRequested[GameAction.PRINT_DEBUG_INFO]) {
-            import std.experimental.logger;
-            debug log("Player position:     ", Game.position[playerEntity].get);
-            debug log("Player velocity:     ", Game.velocity[playerEntity].get);
-            debug log("Player acceleration: ", Game.acceleration[playerEntity].get);
-        }
-
-        if (Game.actionRequested[GameAction.QUIT_GAME]) {
-            glfwSetWindowShouldClose(Globals.window, GLFW_TRUE);
-        }
+    if (nextFrame.actionRequested[nextFrameAction.QUIT_GAME]) {
+        glfwSetWindowShouldClose(Globals.window, GLFW_TRUE);
     }
 }
 
@@ -144,3 +183,4 @@ GameAction associatedAction(int key) pure nothrow @nogc {
     }
     assert(0);
 }
+
