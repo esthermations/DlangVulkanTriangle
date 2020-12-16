@@ -11,13 +11,16 @@ import erupted;
 import erupted.vulkan_lib_loader;
 
 import globals;
-
-/// How many frames in advance we should allow Vulkan to render.
-enum MAX_FRAMES_IN_FLIGHT = 2;
+import game;
 
 // Extension function pointers -- these need to be loaded before called
 PFN_vkCreateDebugUtilsMessengerEXT  vkCreateDebugUtilsMessengerEXT;
 PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
+
+// Predefined types for Uniform and Vertex buffers
+
+alias VertexBuffer  = Renderer.Buffer!Vertex;
+alias UniformBuffer = Renderer.Buffer!Uniforms;
 
 struct Uniforms {
     mat4 model;
@@ -69,19 +72,21 @@ struct Renderer {
     VkQueue          presentQueue;
     //VkQueue transferQueue;
 
-    VkDebugUtilsMessengerEXT messenger;
+    VkDebugUtilsMessengerEXT debugMessenger;
 
     VkDescriptorSetLayout   descriptorSetLayout;
     VkPipelineLayout        pipelineLayout;
     VkCommandPool           commandPool;
     SwapchainWithDependents swapchain;
- 
-    VkSemaphore[MAX_FRAMES_IN_FLIGHT] imageAvailableSemaphores;
-    VkSemaphore[MAX_FRAMES_IN_FLIGHT] renderFinishedSemaphores;
-    VkFence    [MAX_FRAMES_IN_FLIGHT] inFlightFences;
-    VkFence    []                     imagesInFlightFences;
 
-    invariant(imagesInFlightFences.length == swapchain.numFramebuffers());
+    void render(Frame frame) {
+        Uniforms[1] uniforms = [frame.uniformValues];
+        sendDataToBuffer(this.swapchain.uniformBuffers[0], uniforms);
+
+        foreach (vb; frame.vertexBuffers) {
+            this.queueBufferForRendering(vb);
+        }
+    }
 
     /// Will our Vulkan instance support all the provided layers?
     bool haveAllRequiredLayers(const(char)*[] requiredLayers) pure {
@@ -215,6 +220,8 @@ struct Renderer {
             enforce(!errors, "Failed to create VkDevice!");
         }
 
+        // Load Vulkan functions for the VkDevice (via erupted)
+
         loadDeviceLevelFunctions(logicalDevice);
 
         // Get device queues
@@ -244,7 +251,7 @@ struct Renderer {
             enforce(!errors);
         }
 
-        // Create pipeline layout.
+        // Create pipeline layout
 
         {
             VkPipelineLayoutCreateInfo createInfo = {
@@ -275,51 +282,37 @@ struct Renderer {
         this.swapchain = createSwapchain(
             this.logicalDevice,
             this.physicalDevice,
-            this.surfaceExtent,
+            this.getSurfaceExtent(),
         );
 
         // Create sync objects
+        // FIXME: these now live in the Frame struct. 
+        // When are they created? Per-frame?
 
         foreach (i; 0 .. MAX_FRAMES_IN_FLIGHT) {
-            VkSemaphoreCreateInfo imageAvailableSemaphoreCreateInfo;
-            VkSemaphoreCreateInfo renderFinishedSemaphoreCreateInfo;
 
             // Create image available semaphore
 
             {
+                VkSemaphoreCreateInfo createInfo;
                 auto errors = vkCreateSemaphore(
-                    logicalDevice, &imageAvailableSemaphoreCreateInfo, null, 
-                    &imageAvailableSemaphores[i]);
+                    this.logicalDevice, &createInfo, null, 
+                    &this.imageAvailableSemaphores[i]);
                 enforce(!errors);
             }
 
             // Create render finished semaphore
 
             {
+                VkSemaphoreCreateInfo createInfo;
                 auto errors = vkCreateSemaphore(
-                    logicalDevice, &renderFinishedSemaphoreCreateInfo, null, 
-                    &renderFinishedSemaphores[i]);
+                    this.logicalDevice, &createInfo, null, 
+                    &this.renderFinishedSemaphores[i]);
                 enforce(!errors);
             }
-
-            // Create fence
-
-            {
-                VkFenceCreateInfo fenceInfo = {
-                    flags : VK_FENCE_CREATE_SIGNALED_BIT,
-                };
-
-                auto errors = vkCreateFence(
-                    logicalDevice, &fenceInfo, null, &inFlightFences[i]);
-                enforce(!errors);
-            }
-        }
-
-        imagesInFlightFences.length = swapchain.numFramebuffers();
+       }
 
     } // end init()
-
-
 
     VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance) {
         extern (Windows) VkBool32 
@@ -534,21 +527,21 @@ struct Renderer {
     }
 
     SwapchainWithDependents 
-    createSwapchain(VkDevice                 logicalDevice,
-                    VkPhysicalDevice         physicalDevice, 
-                    VkSurfaceKHR             surface, 
-                    GLFWwindow              *window,                        
-                    VkPipelineLayout         pipelineLayout,
-                    VkDescriptorSetLayout    descriptorSetLayout,
-                    VkCommandPool            commandPool)
+    createSwapchainWithDependents(VkDevice                 logicalDevice,
+                                  VkPhysicalDevice         physicalDevice, 
+                                  VkSurfaceKHR             surface, 
+                                  GLFWwindow              *window,                        
+                                  VkPipelineLayout         pipelineLayout,
+                                  VkDescriptorSetLayout    descriptorSetLayout,
+                                  VkCommandPool            commandPool)
     {
         SwapchainWithDependents ret;
 
         vkDeviceWaitIdle(logicalDevice);
 
-        const colourFormat = physicalDevice.getSurfaceFormat(surface);
+        const colourFormat = getSurfaceFormat(physicalDevice, surface);
         const depthFormat  = VK_FORMAT_D32_SFLOAT;
-        const extent = physicalDevice.getSurfaceExtent(surface, window);
+        const extent = getSurfaceExtent(physicalDevice, surface, window);
 
         ret.swapchain      = logicalDevice.createSwapchain(
             physicalDevice, surface, window);
@@ -573,20 +566,18 @@ struct Renderer {
         return ret;
     }
 
-    SwapchainWithDependents 
-    recreateSwapchain(VkDevice                 logicalDevice,
-                      VkPhysicalDevice         physicalDevice, 
-                      VkSurfaceKHR             surface, 
-                      GLFWwindow              *window,                        
-                      VkBuffer                 vertexBuffer,
-                      VkPipelineLayout         pipelineLayout,
-                      VkDescriptorSetLayout    descriptorSetLayout,
-                      VkCommandPool            commandPool,
-                      SwapchainWithDependents  oldSwapchain)
-    {
-        vkDeviceWaitIdle(logicalDevice);
+    SwapchainWithDependents recreateSwapchain() {
+        vkDeviceWaitIdle(this.logicalDevice);
         this.cleanupSwapchain();
-        return createSwapchain(logicalDevice, physicalDevice, surface, window, pipelineLayout, descriptorSetLayout, commandPool);
+        return createSwapchainWithDependents(
+            this.logicalDevice, 
+            this.physicalDevice, 
+            this.surface, 
+            Globals.window, 
+            this.pipelineLayout, 
+            this.descriptorSetLayout, 
+            this.commandPool
+        );
     }
 
     /// Create a command buffer for each given framebuffer.
@@ -641,8 +632,7 @@ struct Renderer {
         return ret;
     }
 
-    VkExtent2D getSurfaceExtent() 
-    {
+    VkExtent2D getSurfaceExtent() {
         const support = querySwapchainSupport();
         return selectExtent(Globals.window, support.capabilities);
     }
@@ -1191,6 +1181,59 @@ struct Renderer {
         return ret;
     }
 
+    /// Issue render commands to the graphics queue to render the data in this
+    /// buffer (interpreted as containing DataT).
+    void queueBufferForRendering(DataT)(immutable Buffer!DataT buffer) {
+        foreach (i; 0 .. this.swapchain.numFramebuffers()) {
+
+            VkCommandBufferBeginInfo beginInfo;
+            auto beginErrors = vkBeginCommandBuffer(
+                this.swapchain.commandBuffers[i], &beginInfo);
+            enforce(!beginErrors, "Failed to begin command buffer");
+
+            // Start a render pass
+            VkRenderPassBeginInfo info = {
+                renderPass  : this.swapchain.renderPass,
+                framebuffer : this.swapchain.framebuffers[i],
+                renderArea  : {
+                    offset : {0, 0},
+                    extent : this.getSurfaceExtent(),
+                },
+                clearValueCount : cast(uint) Globals.clearValues.length,
+                pClearValues    : Globals.clearValues.ptr,
+            };
+
+            VkBuffer[]     buffers = [vertexBuffer];
+            VkDeviceSize[] offsets = [0];
+
+            vkCmdBeginRenderPass(
+                commandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(
+                VK_PIPELINE_BIND_POINT_GRAPHICS, this.swapchain.pipeline);
+            vkCmdBindVertexBuffers(
+                commandBuffer, 0, 1, buffers.ptr, offsets.ptr);
+            vkCmdBindDescriptorSets( commandBuffer, 
+                VK_PIPELINE_BIND_POINT_GRAPHICS, this.pipelineLayout, 0, 1, 
+                &this.swapchain.descriptorSets[i], 0, null);
+            vkCmdDraw(commandBuffer, buffer.elementCount, 1, 0, 0);
+            vkCmdEndRenderPass(commandBuffer);
+
+            auto endErrors = vkEndCommandBuffer(commandBuffer);
+            enforce(!endErrors, "Failed to end command buffer.");
+        }
+    }
+
+    void sendDataToBuffer(DataT)(Buffer!DataT buffer, DataT[] data) 
+        in (data.length != 0)
+        in (data.length * DataT.sizeof <= buffer.size)
+    {
+        void *map;
+        vkMapMemory(this.logicalDevice, buffer.memory, 0, buffer.size, 0, &map);
+        import core.stdc.string : memcpy;
+        memcpy(map, data.ptr, data.length * DataT.sizeof);
+        vkUnmapMemory(this.logicalDevice, buffer.memory);
+    }
+
     struct Buffer(DataT) {
         VkBuffer       buffer;
         VkDeviceMemory memory;
@@ -1200,58 +1243,15 @@ struct Renderer {
             return this.size / DataT.sizeof;
         }
 
-        void sendData(DataT)(VkDevice logicalDevice, DataT[] data) 
-            in (data.length != 0)
-            in (data.length * DataT.sizeof <= this.size)
-        {
-            void *map;
-            vkMapMemory(logicalDevice, this.memory, 0, this.size, 0, &map);
-            import core.stdc.string : memcpy;
-            memcpy(map, data.ptr, data.length * DataT.sizeof);
-            vkUnmapMemory(logicalDevice, this.memory);
-        }
-
-        /// Render data in buffer using the given swapchain
-        void renderData(ref SwapchainWithDependents swapchain,
-                        in  VkExtent2D              surfaceExtent,
-                        VkPipelineLayout            pipelineLayout)
-        {
-            foreach (i, commandBuffer; swapchain.commandBuffers) {
-                VkCommandBufferBeginInfo beginInfo;
-                auto beginErrors = vkBeginCommandBuffer(commandBuffer, &beginInfo);
-                enforce(!beginErrors, "Failed to begin command buffer");
-
-                // Start a render pass
-                VkRenderPassBeginInfo info = {
-                    renderPass  : swapchain.renderPass,
-                    framebuffer : swapchain.framebuffers[i],
-                    renderArea  : {
-                        offset : {0, 0},
-                        extent : surfaceExtent,
-                    },
-                    clearValueCount : cast(uint) Globals.clearValues.length,
-                    pClearValues    : Globals.clearValues.ptr,
-                };
-
-                VkBuffer[]     buffers = [vertexBuffer];
-                VkDeviceSize[] offsets = [0];
-
-                commandBuffer.vkCmdBeginRenderPass(&info, VK_SUBPASS_CONTENTS_INLINE);
-                commandBuffer.vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, swapchain.pipeline);
-                commandBuffer.vkCmdBindVertexBuffers(0, 1, buffers.ptr, offsets.ptr);
-                commandBuffer.vkCmdBindDescriptorSets(VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &swapchain.descriptorSets[i], 0, null);
-                commandBuffer.vkCmdDraw(this.elementCount(), 1, 0, 0);
-                commandBuffer.vkCmdEndRenderPass();
-
-                auto endErrors = vkEndCommandBuffer(commandBuffer);
-                enforce(!endErrors, "Failed to end command buffer.");
-            }
+        void cleanup() {
+            vkDestroyBuffer(logicalDevice, buffer.buffer, null);
+            vkFreeMemory(logicalDevice, buffer.memory, null);
         }
     }
 
-    Buffer createBufferWithData(T)(VkBufferUsageFlags    bufferUsage, 
-                                   VkMemoryPropertyFlags memoryProperties,
-                                   T[]                   data)
+    Buffer!T createBufferWithData(T)(VkBufferUsageFlags    bufferUsage, 
+                                     VkMemoryPropertyFlags memoryProperties,
+                                     T[]                   data)
     {
         Buffer!T ret;
         ret.size = data.length * T.sizeof;
@@ -1293,7 +1293,7 @@ struct Renderer {
             enforce(!errors, "Failed to bind buffer");
         }
 
-        ret.sendData(this.logicalDevice, data);
+        this.sendDataToBuffer(ret, data);
 
         debug log("Returning buffer ", ret);
         return ret;
@@ -1403,21 +1403,22 @@ struct Renderer {
                             Buffer!T[]            uniformBuffers) 
     {
         VkDescriptorSetLayout[] layouts;
-        layouts.length = Globals.uniforms.length;
+        layouts.length = count;
         layouts[]      = descriptorSetLayout;
 
         debug log(layouts);
 
         VkDescriptorSetAllocateInfo allocInfo = {
             descriptorPool     : descriptorPool,
-            descriptorSetCount : cast(uint) Globals.uniforms.length,
+            descriptorSetCount : count,
             pSetLayouts        : layouts.ptr,
         };
 
         VkDescriptorSet[] ret;
-        ret.length = Globals.uniforms.length;
+        ret.length = count;
 
-        auto errors = vkAllocateDescriptorSets(logicalDevice, &allocInfo, ret.ptr);
+        auto errors = vkAllocateDescriptorSets(
+            this.logicalDevice, &allocInfo, ret.ptr);
         enforce(!errors, "Failed to allocate descriptor sets.");
 
         foreach (i, set; ret) {
@@ -1461,15 +1462,10 @@ struct Renderer {
 
     /// Clean up all Vulkan state, ready to shut down the application. Or recreate
     /// the entire Vulkan context. Or whatever.
-    void cleanup(Buffer[] buffers) {
+    void cleanup() {
         cleanupSwapchain();
         vkDestroyCommandPool(logicalDevice, commandPool, null);
         vkDestroyPipelineLayout(logicalDevice, pipelineLayout, null);
-
-        foreach(buffer; buffers) {
-            vkDestroyBuffer(logicalDevice, buffer.buffer, null);
-            vkFreeMemory(logicalDevice, buffer.memory, null);
-        }
 
         vkDestroyDescriptorPool(logicalDevice, descriptorPool, null);
 

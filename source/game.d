@@ -2,7 +2,9 @@ module game;
 
 import glfw3.api;
 import gl3n.linalg; 
+import erupted;
 import globals;
+
 import util;
 import renderer;
 
@@ -25,7 +27,11 @@ struct Frame {
 
     // Renderer state
 
-    Uniforms uniforms;
+    VertexBuffer[]  vertexBuffers;
+    Uniforms        uniformValues;
+
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
 
     // Components
 
@@ -39,6 +45,9 @@ struct Frame {
     invariant(position.length == acceleration.length);
     invariant(position.length == scale.length);
     invariant(position.length == viewMatrix.length);
+
+    import std.algorithm : all, filter;
+    invariant(scale.filter!(s => !s.isNull).all!(s => s >= 0.0));
 
     // Entities
 

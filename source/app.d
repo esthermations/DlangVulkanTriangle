@@ -15,21 +15,26 @@ void main() {
     import core.time;
     Globals.programT0 = MonoTime.currTime();
 
-    auto player      = Game.createEntity;
-    auto camera      = Game.createEntity;
-    auto theStranger = Game.createEntity;
+    Frame initialFrame;
 
-    Game.position    [camera] = vec3(0.0, 5.up, 5.backwards);
+    auto player      = initialFrame.createEntity;
+    auto camera      = initialFrame.createEntity;
+    auto theStranger = initialFrame.createEntity;
 
-    Game.position    [theStranger] = vec3(0);
-    Game.velocity    [theStranger] = vec3(0);
-    Game.acceleration[theStranger] = vec3(0);
+    {
+        alias f = initialFrame;
+        f.position    [camera]      = vec3(0.0, 5.up, 5.backwards);
 
-    Game.position    [player] = vec3(0);
-    Game.velocity    [player] = vec3(0);
-    Game.acceleration[player] = vec3(0);
+        f.position    [theStranger] = vec3(0);
+        f.velocity    [theStranger] = vec3(0);
+        f.acceleration[theStranger] = vec3(0);
 
-    Game.playerEntity = player;
+        f.position    [player]      = vec3(0);
+        f.velocity    [player]      = vec3(0);
+        f.acceleration[player]      = vec3(0);
+
+        f.playerEntity = player;
+    }
 
     // Init GLFW
 
@@ -89,11 +94,10 @@ void main() {
 
     // Import some 3D models
 
-    import obj;
-
     Vertex[] vertices;
 
     {
+        import obj;
         ObjData model = parseObj("./models/Barrel02.obj");
         vertices.length = model.positions.length;
         foreach (i; 0 .. vertices.length) {
@@ -104,7 +108,7 @@ void main() {
 
     // Create vertex buffer using those vertices
 
-    Buffer vertexBuffer = createBufferWithData(
+    auto vertexBuffer = renderer.createBufferWithData(
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
         ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT 
         | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
@@ -112,8 +116,6 @@ void main() {
     );
 
     // Record commands
-
-    vertexBuffer.render();
 
     /*
     ---------------------------------------------------------------------------
@@ -125,46 +127,28 @@ void main() {
 
     MonoTime frameBeginTime;
 
+    Frame thisFrame;
+
     while (!glfwWindowShouldClose(Globals.window)) {
-        frameBeginTime = MonoTime.currTime();
-        scope(exit) {
-            Globals.lastFrameDuration = MonoTime.currTime() - frameBeginTime;
-            debug if (Globals.lastFrameDuration > Globals.frameDeadline) {
-                log("Missed frame deadline of ", Globals.frameDeadline, 
-                    "! Frame took ", Globals.lastFrameDuration, ".");
+        debug(performance) {
+            frameBeginTime = MonoTime.currTime();
+            scope(exit) {
+                Globals.lastFrameDuration = MonoTime.currTime() - frameBeginTime;
+                debug if (Globals.lastFrameDuration > Globals.frameDeadline) {
+                    log("Missed frame deadline of ", Globals.frameDeadline, 
+                        "! Frame took ", Globals.lastFrameDuration, ".");
+                }
             }
         }
+
+        Frame nextFrame = tick(thisFrame);
+        renderer.draw(nextFrame);
 
         ++frameNumber;
         glfwPollEvents();
 
-        vkWaitForFences(logicalDevice, 1, &inFlightFences[Globals.currentFrame], VK_TRUE, ulong.max);
-
-        uint imageIndex;
-        vkAcquireNextImageKHR(logicalDevice, swapchain.swapchain, ulong.max, 
-                              imageAvailableSemaphores[Globals.currentFrame], 
-                              VK_NULL_HANDLE, &imageIndex);
-
-        enforce(imageIndex < imagesInFlightFences.length);
-        enforce(imageIndex < Globals.uniforms.length);
-        enforce(imageIndex < swapchain.uniformBuffers.length);
-
-        if (imagesInFlightFences[imageIndex] != VK_NULL_HANDLE) {
-            auto fenceStatus = logicalDevice.vkGetFenceStatus(
-                imagesInFlightFences[imageIndex]);
-
-            if (fenceStatus == VK_NOT_READY) {
-                debug log("Waiting for fence. (Frame ", frameNumber, ")");
-            }
-            
-            vkWaitForFences(logicalDevice, 1, &imagesInFlightFences[imageIndex], 
-                            VK_TRUE, ulong.max);
-        }
-
         // Mark the image as being in use by this frame
-        imagesInFlightFences[imageIndex] = inFlightFences[Globals.currentFrame];
 
-        VkPipelineStageFlags[1] waitStages       = [VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT];
         VkSemaphore[1]          waitSemaphores   = [imageAvailableSemaphores[Globals.currentFrame]];
         VkSemaphore[1]          signalSemaphores = [renderFinishedSemaphores[Globals.currentFrame]];
 
@@ -185,8 +169,7 @@ void main() {
         import game;
         Game.tick();
 
-        auto submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, 
-                                          inFlightFences[Globals.currentFrame]);
+        auto submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
                                         
         enforce(submitResult == VK_SUCCESS);
 
