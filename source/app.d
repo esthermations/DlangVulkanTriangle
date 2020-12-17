@@ -23,17 +23,18 @@ void main() {
 
     {
         alias f = initialFrame;
-        f.position    [camera]      = vec3(0.0, 5.up, 5.backwards);
 
         f.position    [theStranger] = vec3(0);
         f.velocity    [theStranger] = vec3(0);
         f.acceleration[theStranger] = vec3(0);
 
-        f.position    [player]      = vec3(0);
-        f.velocity    [player]      = vec3(0);
-        f.acceleration[player]      = vec3(0);
+        f.position    [player]       = vec3(0);
+        f.velocity    [player]       = vec3(0);
+        f.acceleration[player]       = vec3(0);
+        f.controlledByPlayer[player] = true;
 
-        f.playerEntity = player;
+        f.position    [camera]      = vec3(0.0, 5.up, 5.backwards);
+        f.lookAtTarget[camera]      = f.position[player];
     }
 
     // Init GLFW
@@ -142,7 +143,7 @@ void main() {
         }
 
         Frame nextFrame = tick(thisFrame);
-        renderer.draw(nextFrame);
+        renderer.render(nextFrame);
 
         ++frameNumber;
         glfwPollEvents();

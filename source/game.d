@@ -1,5 +1,8 @@
 module game;
 
+import std.typecons : Nullable;
+import std.algorithm;
+
 import glfw3.api;
 import gl3n.linalg; 
 import erupted;
@@ -23,35 +26,47 @@ enum GameAction {
 enum MOVEMENT_IMPULSE = 0.001;
 
 struct Frame {
-    import std.typecons : Nullable;
 
     // Renderer state
 
-    VertexBuffer[]  vertexBuffers;
-    Uniforms        uniformValues;
+    mat4 projection;
+    mat4 view;
+
+    UniformBuffer uniformBuffer;
 
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
 
     // Components
 
-    Nullable!vec3[]  position;
-    Nullable!vec3[]  velocity;
-    Nullable!vec3[]  acceleration;
-    Nullable!float[] scale;
-    Nullable!mat4[]  viewMatrix;
+    Nullable!vec3[]         position;
+    Nullable!vec3[]         velocity;
+    Nullable!vec3[]         acceleration;
+    Nullable!vec3[]         lookAtTarget;
+    Nullable!bool[]         controlledByPlayer;
+    Nullable!float[]        scale;
+    Nullable!mat4[]         modelMatrix;
+    Nullable!mat4[]         viewMatrix;
+    Nullable!VertexBuffer[] vertexBuffer;
 
-    invariant(position.length == velocity.length);
-    invariant(position.length == acceleration.length);
-    invariant(position.length == scale.length);
-    invariant(position.length == viewMatrix.length);
+    /// How many entities exist in this frame?
+    auto numEntities() immutable {
+        return position.length;
+    }
 
-    import std.algorithm : all, filter;
+    invariant(numEntities() == position.length);
+    invariant(numEntities() == velocity.length);
+    invariant(numEntities() == acceleration.length);
+    invariant(numEntities() == lookAtTarget.length);
+    invariant(numEntities() == controlledByPlayer.length);
+    invariant(numEntities() == scale.length);
+    invariant(numEntities() == modelMatrix.length);
+    invariant(numEntities() == viewMatrix.length);
+    invariant(numEntities() == vertexBuffer.length);
+
     invariant(scale.filter!(s => !s.isNull).all!(s => s >= 0.0));
 
     // Entities
-
-    uint playerEntity;
 
     uint createEntity()
         out (ret; this.position.length == ret + 1)
@@ -86,10 +101,9 @@ Frame tick(Frame previousFrame) pure {
     };
 
     glfwSetWindowUserPointer(Globals.window, &nextFrame);
+    glfwPollEvents();
 
-    // set of all entities that have acceleration and velocity
-
-    //auto ents = query(Game.velocity, Game.acceleration, Game.fleebleBoo, Game.nintendo64);
+    // Update velocities
 
     {
         auto velEnts = entitiesWithComponent(previousFrame.velocity);
@@ -101,6 +115,8 @@ Frame tick(Frame previousFrame) pure {
         }
     }
 
+    // Update positions
+
     {
         auto posEnts = entitiesWithComponent(previousFrame.position);
         auto velEnts = entitiesWithComponent(previousFrame.velocity);
@@ -111,6 +127,8 @@ Frame tick(Frame previousFrame) pure {
         }
     }
 
+    // Update model matrices
+
     {
         auto posEnts = entitiesWithComponent(previousFrame.position);
         auto sclEnts = entitiesWithComponent(previousFrame.scale);
@@ -119,13 +137,47 @@ Frame tick(Frame previousFrame) pure {
         foreach (e; ents) {
             auto scale    = previousFrame.scale[e];
             auto position = previousFrame.position[e];
-            nextFrame.viewMatrix[e] = mat4.identity.scale(scale, scale, scale)
-                                                   .translate(position)
-                                                   .transposed();
+            nextFrame.modelMatrix[e] = mat4.identity.scale(scale, scale, scale)
+                                                    .translate(position)
+                                                    .transposed();
         }
     }
 
-    glfwPollEvents();
+    // Issue render commands
+
+    {
+        auto modelEnts = entitiesWithComponent(previousFrame.modelMatrix);
+        auto vbufEnts  = entitiesWithComponent(previousFrame.vertexBuffer);
+        auto ents      = setIntersection(modelEnts, vbufEnts);
+
+        auto viewMatrixEnts = entitiesWithComponent(previousFrame.viewMatrix);
+
+        enforce(viewMatrixEnts.length == 1, "More than one view matrix???");
+        auto viewMatrix = previousFrame.viewMatrix[ viewMatrixEnts[0] ];
+
+        debug {
+            enforce(modelEnts == ents && vbufEnts == ents, 
+                    "Not all entities with a model have an associated vertex " ~
+                    "buffer. This is weird!");
+        }
+
+        vkBeginCommandBuffer(nextFrame.commandBuffer);
+
+        foreach (e; ents) {
+            Uniforms ubo = {
+                projection : previousFrame.projection,
+                view       : viewMatrix,
+                model      : previousFrame.modelMatrix[e],
+            };
+
+            previousFrame.uniformBuffer;
+            // TODO
+        }
+
+        auto endErrors = vkEndCommandBuffer(nextFrame.commandBuffer);
+        enforce(!endErrors);
+    }
+
 
     // Set player's acceleration based on player input
     nextFrame.acceleration[playerEntity] = vec3(0);

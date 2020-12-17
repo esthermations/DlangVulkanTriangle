@@ -80,12 +80,6 @@ struct Renderer {
     SwapchainWithDependents swapchain;
 
     void render(Frame frame) {
-        Uniforms[1] uniforms = [frame.uniformValues];
-        sendDataToBuffer(this.swapchain.uniformBuffers[0], uniforms);
-
-        foreach (vb; frame.vertexBuffers) {
-            this.queueBufferForRendering(vb);
-        }
     }
 
     /// Will our Vulkan instance support all the provided layers?
@@ -526,42 +520,25 @@ struct Renderer {
         }
     }
 
-    SwapchainWithDependents 
-    createSwapchainWithDependents(VkDevice                 logicalDevice,
-                                  VkPhysicalDevice         physicalDevice, 
-                                  VkSurfaceKHR             surface, 
-                                  GLFWwindow              *window,                        
-                                  VkPipelineLayout         pipelineLayout,
-                                  VkDescriptorSetLayout    descriptorSetLayout,
-                                  VkCommandPool            commandPool)
-    {
+    SwapchainWithDependents createSwapchainWithDependents() {
         SwapchainWithDependents ret;
 
         vkDeviceWaitIdle(logicalDevice);
 
-        const colourFormat = getSurfaceFormat(physicalDevice, surface);
+        const colourFormat = getSurfaceFormat(this.physicalDevice, this.surface);
         const depthFormat  = VK_FORMAT_D32_SFLOAT;
-        const extent = getSurfaceExtent(physicalDevice, surface, window);
+        const extent = getSurfaceExtent(this.physicalDevice, surface, Globals.window);
 
-        ret.swapchain      = logicalDevice.createSwapchain(
-            physicalDevice, surface, window);
-        ret.imageViews     = logicalDevice.createImageViewsForSwapchain(
-            physicalDevice, surface, ret.swapchain, window);
-        ret.uniformBuffers = logicalDevice.createUniformBuffers(
-            physicalDevice, ret.imageViews.length);
-        ret.renderPass     = logicalDevice.createRenderPass(
-            colourFormat, depthFormat);
-        ret.pipeline       = logicalDevice.createGraphicsPipeline(
-            pipelineLayout, extent, ret.renderPass);
-        ret.depthResources = logicalDevice.createDepthResources(
-            physicalDevice, extent);
-        ret.framebuffers   = logicalDevice.createFramebuffers(
-            ret.imageViews, ret.depthResources.imageView, ret.renderPass, extent);
-        ret.commandBuffers = logicalDevice.createCommandBuffers(
-            ret.framebuffers, commandPool);
-        ret.descriptorPool = logicalDevice.createDescriptorPool();
-        ret.descriptorSets = logicalDevice.createDescriptorSets(
-            ret.descriptorPool, descriptorSetLayout, ret.uniformBuffers);
+        ret.swapchain      = this.createSwapchain();
+        ret.imageViews     = this.createImageViewsForSwapchain(ret.swapchain);
+        ret.uniformBuffers = this.createUniformBuffers(ret.imageViews.length);
+        ret.renderPass     = this.createRenderPass(colourFormat, depthFormat);
+        ret.pipeline       = this.createGraphicsPipeline(pipelineLayout, extent, ret.renderPass);
+        ret.depthResources = this.createDepthResources(physicalDevice, extent);
+        ret.framebuffers   = this.createFramebuffers(ret.imageViews, ret.depthResources.imageView, ret.renderPass, extent);
+        ret.commandBuffers = this.createCommandBuffers(ret.framebuffers, commandPool);
+        ret.descriptorPool = this.createDescriptorPool(); 
+        ret.descriptorSets = this.createDescriptorSets(ret.descriptorPool, descriptorSetLayout, ret.uniformBuffers);
 
         return ret;
     }
@@ -569,15 +546,7 @@ struct Renderer {
     SwapchainWithDependents recreateSwapchain() {
         vkDeviceWaitIdle(this.logicalDevice);
         this.cleanupSwapchain();
-        return createSwapchainWithDependents(
-            this.logicalDevice, 
-            this.physicalDevice, 
-            this.surface, 
-            Globals.window, 
-            this.pipelineLayout, 
-            this.descriptorSetLayout, 
-            this.commandPool
-        );
+        return createSwapchainWithDependents();
     }
 
     /// Create a command buffer for each given framebuffer.
@@ -640,8 +609,7 @@ struct Renderer {
     /// Set up the graphics pipeline for our application. There are a lot of
     /// hardcoded properties about our pipeline in this function -- it's not nearly
     /// as agnostic as it may appear.
-    VkPipeline createGraphicsPipeline(VkDevice         logicalDevice,
-                                      VkPipelineLayout pipelineLayout,
+    VkPipeline createGraphicsPipeline(VkPipelineLayout pipelineLayout,
                                       VkExtent2D       swapchainExtent,
                                       VkRenderPass     renderPass)
     {
@@ -675,8 +643,8 @@ struct Renderer {
             primitiveRestartEnable : VK_FALSE,
         };
 
-        /// NOTE that our viewport is flipped upside-down so we can use Y-up, where
-        /// Vulkan normally uses Y-down.
+        /// NOTE that our viewport is flipped upside-down so we can use Y-up,
+        /// where Vulkan normally uses Y-down.
         VkViewport viewport = {
             x        : 0.0f,
             y        : swapchainExtent.height,
@@ -869,9 +837,10 @@ struct Renderer {
         }
     }
 
-    /// Select queue families that meet our criteria, defined in this function. The
-    /// members of QueueFamilies are nullable -- this function may fail to find all
-    /// the queue families in that struct. If it can't find them, they will be null.
+    /// Select queue families that meet our criteria, defined in this function.
+    /// The members of QueueFamilies are nullable -- this function may fail to
+    /// find all the queue families in that struct. If it can't find them, they
+    /// will be null.
     QueueFamilies selectQueueFamilies(VkPhysicalDevice physicalDevice, 
                                       VkSurfaceKHR     surface) 
     {
@@ -902,8 +871,8 @@ struct Renderer {
                                                  surface, 
                                                  &supportsPresent);
 
-            // NOTE: We may want to use different queue families for graphics and
-            // present. Not sure why, but the tutorial said we would.
+            // NOTE: We may want to use different queue families for graphics
+            // and present. Not sure why, but the tutorial said we would.
             if (supportsPresent) {
                 ret.present = cast(uint) i;
             }
@@ -926,13 +895,7 @@ struct Renderer {
         return ret;
     }
 
-    /*
-    -------------------------------------------------------------------------------
-    --  isSuitable(VkPhysicalDevice)
-    -------------------------------------------------------------------------------
-    */
-
-    /// Is this device suitable for our purposes (drawing a triangle)?
+    /// Is this device suitable for our purposes?
     bool isSuitable(VkPhysicalDevice physicalDevice, 
                     const(char)*[]   requiredDeviceExtensions,
                     VkSurfaceKHR     surface) 
@@ -965,8 +928,8 @@ struct Renderer {
 
 
         // FIXME: this is an enormous nightmare because extension names are
-        // char[256] and some things are const(char)* and some things are string.
-        // That's all.
+        // char[256] and some things are const(char)* and some things are
+        // string. That's all.
 
         import std.string : fromStringz;
         bool[string] extensionFound;
@@ -1010,12 +973,6 @@ struct Renderer {
         return true;
     }
 
-    /*
-    -------------------------------------------------------------------------------
-    --  selectPhysicalDevice
-    -------------------------------------------------------------------------------
-    */
-
     /// Select a physical device available in the instance based on whether it
     /// satisfies isSuitable().
     VkPhysicalDevice selectPhysicalDevice(VkInstance     instance,
@@ -1040,12 +997,6 @@ struct Renderer {
         enforce(false, "Couldn't find a suitable physical device!");
         return VK_NULL_HANDLE;
     }
-
-    /*
-    -------------------------------------------------------------------------------
-    --  querySwapchainSupport
-    -------------------------------------------------------------------------------
-    */
 
     struct SwapchainSupportDetails {
         VkSurfaceCapabilitiesKHR   capabilities;
@@ -1080,12 +1031,6 @@ struct Renderer {
         return ret;
     }
 
-    /*
-    -------------------------------------------------------------------------------
-    --  selectSurfaceFormat
-    -------------------------------------------------------------------------------
-    */
-
     VkSurfaceFormatKHR selectSurfaceFormat(in VkSurfaceFormatKHR[] formats) 
         in (formats.length != 0)
     {
@@ -1117,12 +1062,6 @@ struct Renderer {
         // Fallback case -- FIFO is guaranteed to be available
         return VK_PRESENT_MODE_FIFO_KHR;
     }
-
-    /**
-    -------------------------------------------------------------------------------
-    --  selectExtent
-    -------------------------------------------------------------------------------
-    */
 
     VkExtent2D selectExtent(   GLFWwindow              *window, 
                             in VkSurfaceCapabilitiesKHR capabilities) {
@@ -1157,12 +1096,6 @@ struct Renderer {
         }
     }
 
-    /**
-    -------------------------------------------------------------------------------
-    --  createShaderModule
-    -------------------------------------------------------------------------------
-    */
-
     VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
         import std.stdio : File;
         auto file = File(path, "rb");
@@ -1181,58 +1114,11 @@ struct Renderer {
         return ret;
     }
 
-    /// Issue render commands to the graphics queue to render the data in this
-    /// buffer (interpreted as containing DataT).
-    void queueBufferForRendering(DataT)(immutable Buffer!DataT buffer) {
-        foreach (i; 0 .. this.swapchain.numFramebuffers()) {
-
-            VkCommandBufferBeginInfo beginInfo;
-            auto beginErrors = vkBeginCommandBuffer(
-                this.swapchain.commandBuffers[i], &beginInfo);
-            enforce(!beginErrors, "Failed to begin command buffer");
-
-            // Start a render pass
-            VkRenderPassBeginInfo info = {
-                renderPass  : this.swapchain.renderPass,
-                framebuffer : this.swapchain.framebuffers[i],
-                renderArea  : {
-                    offset : {0, 0},
-                    extent : this.getSurfaceExtent(),
-                },
-                clearValueCount : cast(uint) Globals.clearValues.length,
-                pClearValues    : Globals.clearValues.ptr,
-            };
-
-            VkBuffer[]     buffers = [vertexBuffer];
-            VkDeviceSize[] offsets = [0];
-
-            vkCmdBeginRenderPass(
-                commandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
-            vkCmdBindPipeline(
-                VK_PIPELINE_BIND_POINT_GRAPHICS, this.swapchain.pipeline);
-            vkCmdBindVertexBuffers(
-                commandBuffer, 0, 1, buffers.ptr, offsets.ptr);
-            vkCmdBindDescriptorSets( commandBuffer, 
-                VK_PIPELINE_BIND_POINT_GRAPHICS, this.pipelineLayout, 0, 1, 
-                &this.swapchain.descriptorSets[i], 0, null);
-            vkCmdDraw(commandBuffer, buffer.elementCount, 1, 0, 0);
-            vkCmdEndRenderPass(commandBuffer);
-
-            auto endErrors = vkEndCommandBuffer(commandBuffer);
-            enforce(!endErrors, "Failed to end command buffer.");
-        }
-    }
-
-    void sendDataToBuffer(DataT)(Buffer!DataT buffer, DataT[] data) 
-        in (data.length != 0)
-        in (data.length * DataT.sizeof <= buffer.size)
-    {
-        void *map;
-        vkMapMemory(this.logicalDevice, buffer.memory, 0, buffer.size, 0, &map);
-        import core.stdc.string : memcpy;
-        memcpy(map, data.ptr, data.length * DataT.sizeof);
-        vkUnmapMemory(this.logicalDevice, buffer.memory);
-    }
+    /*
+    ---------------------------------------------------------------------------
+    --  Buffers
+    ---------------------------------------------------------------------------
+    */
 
     struct Buffer(DataT) {
         VkBuffer       buffer;
@@ -1249,9 +1135,8 @@ struct Renderer {
         }
     }
 
-    Buffer!T createBufferWithData(T)(VkBufferUsageFlags    bufferUsage, 
-                                     VkMemoryPropertyFlags memoryProperties,
-                                     T[]                   data)
+    Buffer!T createBuffer(T)(VkBufferUsageFlags    bufferUsage, 
+                             VkMemoryPropertyFlags memoryProperties)
     {
         Buffer!T ret;
         ret.size = data.length * T.sizeof;
@@ -1293,10 +1178,64 @@ struct Renderer {
             enforce(!errors, "Failed to bind buffer");
         }
 
-        this.sendDataToBuffer(ret, data);
-
         debug log("Returning buffer ", ret);
         return ret;
+    }
+
+    /// Perform a render pass (vkCmdBeginRenderPass) using the contents of this
+    /// buffer, issuing commands into the provided command buffer.
+    void issueRenderCommands(DataT)(immutable Buffer!DataT buffer, 
+                                    VkCommandBuffer commandBuffer) 
+    {
+
+            // FIXME, which framebuffer should we use?
+            immutable framebufferIndex = 0;
+
+            // Start a render pass
+            VkRenderPassBeginInfo info = {
+                renderPass  : this.swapchain.renderPass,
+                framebuffer : this.swapchain.framebuffers[framebufferIndex], 
+                renderArea  : {
+                    offset : {0, 0},
+                    extent : this.getSurfaceExtent(),
+                },
+                clearValueCount : cast(uint) Globals.clearValues.length,
+                pClearValues    : Globals.clearValues.ptr,
+            };
+
+            VkBuffer[0]     buffers = [buffer];
+            VkDeviceSize[0] offsets = [0];
+
+            vkCmdBeginRenderPass(commandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, this.swapchain.pipeline);
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, buffers.ptr, offsets.ptr);
+
+            vkCmdBindDescriptorSets(
+                commandBuffer, 
+                VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                this.pipelineLayout, 
+                0, 
+                1, 
+                &this.swapchain.descriptorSets[framebufferIndex], 
+                0, 
+                null
+            );
+
+            vkCmdDraw(commandBuffer, buffer.elementCount, 1, 0, 0);
+            vkCmdEndRenderPass(commandBuffer);
+        }
+    }
+
+    void issueUpdateCommand(DataT)(immutable Buffer!DataT buffer, DataT[] data) 
+         in (data.length != 0)
+         in (data.length * DataT.sizeof <= buffer.size)
+         in (this.size < 65536) // vkspec pp. 832
+    {
+        immutable VkDeviceSize dataSize = (data.length * DataT.sizeof);
+
+        foreach (commandBuffer; this.swapchain.commandBuffers) {
+            vkCmdUpdateBuffer(commandBuffer, buffer.buffer, 0, dataSize, data.ptr);
+        }
     }
 
     uint findMemoryType(uint typeFilter, 
