@@ -48,8 +48,8 @@ void main() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
     Globals.window = glfwCreateWindow(
-        Globals.framebufferWidth, 
-        Globals.framebufferHeight, 
+        Globals.windowWidth, 
+        Globals.windowHeight, 
         "Carl", 
         null, 
         null
@@ -109,14 +109,12 @@ void main() {
 
     // Create vertex buffer using those vertices
 
-    auto vertexBuffer = renderer.createBufferWithData(
+    auto playerVertexBuffer = renderer.createBuffer!Vertex(
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
-        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT 
-        | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
-        vertices,
+        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
+        vertices.length,
     );
-
-    // Record commands
 
     /*
     ---------------------------------------------------------------------------
@@ -126,117 +124,12 @@ void main() {
 
     uint frameNumber = 0;
 
-    MonoTime frameBeginTime;
-
-    Frame thisFrame;
+    Frame thisFrame = game.tick(initialFrame, renderer);
 
     while (!glfwWindowShouldClose(Globals.window)) {
-        debug(performance) {
-            frameBeginTime = MonoTime.currTime();
-            scope(exit) {
-                Globals.lastFrameDuration = MonoTime.currTime() - frameBeginTime;
-                debug if (Globals.lastFrameDuration > Globals.frameDeadline) {
-                    log("Missed frame deadline of ", Globals.frameDeadline, 
-                        "! Frame took ", Globals.lastFrameDuration, ".");
-                }
-            }
-        }
-
-        Frame nextFrame = tick(thisFrame);
-        renderer.render(nextFrame);
-
-        ++frameNumber;
-        glfwPollEvents();
-
-        // Mark the image as being in use by this frame
-
-        VkSemaphore[1]          waitSemaphores   = [imageAvailableSemaphores[Globals.currentFrame]];
-        VkSemaphore[1]          signalSemaphores = [renderFinishedSemaphores[Globals.currentFrame]];
-
-        VkSubmitInfo submitInfo = {
-            waitSemaphoreCount   : 1,
-            pWaitSemaphores      : waitSemaphores.ptr,
-            pWaitDstStageMask    : waitStages.ptr,
-            commandBufferCount   : 1,
-            pCommandBuffers      : &swapchain.commandBuffers[imageIndex],
-            signalSemaphoreCount : 1,
-            pSignalSemaphores    : signalSemaphores.ptr,
-        };
-
-        vkResetFences(logicalDevice, 1, &inFlightFences[Globals.currentFrame]);
-
-        updateUniforms(logicalDevice, swapchain.uniformBuffers[imageIndex], imageIndex);
-
-        import game;
-        Game.tick();
-
-        auto submitResult = vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
-                                        
-        enforce(submitResult == VK_SUCCESS);
-
-        VkSwapchainKHR[1] swapchains = [swapchain.swapchain];
-
-        VkPresentInfoKHR presentInfo = {
-            waitSemaphoreCount : 1,
-            pWaitSemaphores    : signalSemaphores.ptr,
-            swapchainCount     : 1,
-            pSwapchains        : swapchains.ptr, 
-            pImageIndices      : &imageIndex,
-            pResults           : null,
-        };
-
-        auto queuePresentResult = vkQueuePresentKHR(presentQueue, &presentInfo);
-
-        switch (queuePresentResult) {
-            case VK_ERROR_OUT_OF_DATE_KHR: debug log("Out of date!"); break;
-            case VK_SUBOPTIMAL_KHR: debug log("Suboptimal!"); break;
-            default: break;
-        }
-
-        if (queuePresentResult == VK_ERROR_OUT_OF_DATE_KHR || 
-            queuePresentResult == VK_SUBOPTIMAL_KHR || 
-            Globals.framebufferWasResized) 
-        {
-            debug log("Recreating swapchain (frame ", frameNumber, ")");
-
-            Globals.framebufferWasResized = false;
-
-            swapchain = recreateSwapchain(
-                logicalDevice, 
-                physicalDevice, 
-                surface, 
-                Globals.window,
-                vertexBuffer.buffer,
-                pipelineLayout, 
-                descriptorSetLayout,
-                commandPool, 
-                swapchain
-            );
-
-            auto extent = physicalDevice.getSurfaceExtent(surface, Globals.window);
-
-            issueRenderCommands(
-                swapchain, extent, pipelineLayout, vertices, vertexBuffer.buffer);
-
-            Globals.uniforms.length = swapchain.imageViews.length;
-        }
-
-        Globals.currentFrame = 
-            (Globals.currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+        thisFrame = tick(thisFrame, renderer);
+        renderer.render(thisFrame);
     } // End of main loop
 
-    vkDeviceWaitIdle(logicalDevice);
-
-    vulkanCleanup(instance, 
-                  messenger,
-                  surface, 
-                  logicalDevice, 
-                  [vertexBuffer],
-                  descriptorSetLayout,
-                  pipelineLayout, 
-                  descriptorPool,
-                  commandPool,
-                  swapchain,
-                  imageAvailableSemaphores ~ renderFinishedSemaphores, 
-                  inFlightFences);
+    renderer.cleanup();
 }

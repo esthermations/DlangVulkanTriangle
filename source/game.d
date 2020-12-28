@@ -2,6 +2,7 @@ module game;
 
 import std.typecons : Nullable;
 import std.algorithm;
+import std.exception : enforce;
 
 import glfw3.api;
 import gl3n.linalg; 
@@ -32,10 +33,14 @@ struct Frame {
     mat4 projection;
     mat4 view;
 
+    uint imageIndex;
+
     UniformBuffer uniformBuffer;
 
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
+
+    VkCommandBuffer commandBuffer;
 
     // Components
 
@@ -54,17 +59,19 @@ struct Frame {
         return position.length;
     }
 
-    invariant(numEntities() == position.length);
-    invariant(numEntities() == velocity.length);
-    invariant(numEntities() == acceleration.length);
-    invariant(numEntities() == lookAtTarget.length);
-    invariant(numEntities() == controlledByPlayer.length);
-    invariant(numEntities() == scale.length);
-    invariant(numEntities() == modelMatrix.length);
-    invariant(numEntities() == viewMatrix.length);
-    invariant(numEntities() == vertexBuffer.length);
+    invariant {
+        assert(position.length == position.length);
+        assert(position.length == velocity.length);
+        assert(position.length == acceleration.length);
+        assert(position.length == lookAtTarget.length);
+        assert(position.length == controlledByPlayer.length);
+        assert(position.length == scale.length);
+        assert(position.length == modelMatrix.length);
+        assert(position.length == viewMatrix.length);
+        assert(position.length == vertexBuffer.length);
 
-    invariant(scale.filter!(s => !s.isNull).all!(s => s >= 0.0));
+        assert(scale.filter!(s => !s.isNull).all!(s => s >= 0.0));
+    }
 
     // Entities
 
@@ -73,11 +80,17 @@ struct Frame {
     {
         static uint nextEntityID = 0;
 
-        this.position.length     = 1 + nextEntityID;
-        this.velocity.length     = 1 + nextEntityID;
-        this.acceleration.length = 1 + nextEntityID;
-        this.scale.length        = 1 + nextEntityID;
-        this.viewMatrix.length   = 1 + nextEntityID;
+        immutable newLength = 1 + nextEntityID;
+
+        this.position.length           = newLength;
+        this.velocity.length           = newLength;
+        this.acceleration.length       = newLength;
+        this.scale.length              = newLength;
+        this.viewMatrix.length         = newLength;
+        this.lookAtTarget.length       = newLength;
+        this.controlledByPlayer.length = newLength;
+        this.modelMatrix.length        = newLength;
+        this.vertexBuffer.length       = newLength;
 
         return nextEntityID++;
     }
@@ -88,134 +101,130 @@ struct Frame {
     bool[GameAction.max + 1] actionRequested = [false];
 }
 
-Frame tick(Frame previousFrame) pure {
+Frame tick(Frame previousFrame, ref Renderer renderer) {
     import std.algorithm : map, fold, setIntersection, each;
     import std.experimental.logger;
 
-    Frame nextFrame = {
-        playerEntity    : previousFrame.playerEntity,
-        position        : previousFrame.position,
-        velocity        : previousFrame.velocity,
-        acceleration    : previousFrame.acceleration,
-        actionRequested : [false],
+    Frame thisFrame = {
+        position           : previousFrame.position,
+        velocity           : previousFrame.velocity,
+        acceleration       : previousFrame.acceleration,
+        lookAtTarget       : previousFrame.lookAtTarget,
+        controlledByPlayer : previousFrame.controlledByPlayer,
+        scale              : previousFrame.scale,
+        modelMatrix        : previousFrame.modelMatrix,
+        viewMatrix         : previousFrame.viewMatrix,
+        vertexBuffer       : previousFrame.vertexBuffer,
+        actionRequested    : [false],
     };
 
-    glfwSetWindowUserPointer(Globals.window, &nextFrame);
+    glfwSetWindowUserPointer(Globals.window, &thisFrame);
     glfwPollEvents();
 
     // Update velocities
 
     {
-        auto velEnts = entitiesWithComponent(previousFrame.velocity);
-        auto accEnts = entitiesWithComponent(previousFrame.acceleration);
+        auto velEnts = entitiesWithComponent(thisFrame.velocity);
+        auto accEnts = entitiesWithComponent(thisFrame.acceleration);
         auto ents    = setIntersection(velEnts, accEnts);
         debug log("updateVelocity: ", ents);
         foreach (e; ents) {
-            nextFrame.velocity[e] += previousFrame.acceleration[e];
+            thisFrame.velocity[e] += thisFrame.acceleration[e];
         }
     }
 
     // Update positions
 
     {
-        auto posEnts = entitiesWithComponent(previousFrame.position);
-        auto velEnts = entitiesWithComponent(previousFrame.velocity);
+        auto posEnts = entitiesWithComponent(thisFrame.position);
+        auto velEnts = entitiesWithComponent(thisFrame.velocity);
         auto ents    = setIntersection(posEnts, velEnts);
         debug log("updatePosition: ", ents);
         foreach (e; ents) {
-            nextFrame.position[e] += previousFrame.velocity[e];
+            thisFrame.position[e] += thisFrame.velocity[e];
         }
     }
 
     // Update model matrices
 
     {
-        auto posEnts = entitiesWithComponent(previousFrame.position);
-        auto sclEnts = entitiesWithComponent(previousFrame.scale);
+        auto posEnts = entitiesWithComponent(thisFrame.position);
+        auto sclEnts = entitiesWithComponent(thisFrame.scale);
         auto ents    = setIntersection(posEnts, sclEnts);
         debug log("updateViewMatrix: ", ents);
         foreach (e; ents) {
-            auto scale    = previousFrame.scale[e];
-            auto position = previousFrame.position[e];
-            nextFrame.modelMatrix[e] = mat4.identity.scale(scale, scale, scale)
+            auto scale    = thisFrame.scale[e].get;
+            auto position = thisFrame.position[e].get;
+            thisFrame.modelMatrix[e] = mat4.identity.scale(scale, scale, scale)
                                                     .translate(position)
                                                     .transposed();
         }
     }
 
+
     // Issue render commands
 
     {
-        auto modelEnts = entitiesWithComponent(previousFrame.modelMatrix);
-        auto vbufEnts  = entitiesWithComponent(previousFrame.vertexBuffer);
-        auto ents      = setIntersection(modelEnts, vbufEnts);
+        auto modelEnts = entitiesWithComponent(thisFrame.modelMatrix);
+        auto vbufEnts  = entitiesWithComponent(thisFrame.vertexBuffer);
+        auto renderableEntities = setIntersection(modelEnts, vbufEnts);
 
-        auto viewMatrixEnts = entitiesWithComponent(previousFrame.viewMatrix);
 
-        enforce(viewMatrixEnts.length == 1, "More than one view matrix???");
-        auto viewMatrix = previousFrame.viewMatrix[ viewMatrixEnts[0] ];
+        // NOTE: We're explicitly assuming here that only one entity (the
+        // camera) will have a view matrix. Or at least, if there are multiple
+        // view matrices, we're always using the first one.
+        auto viewMatrixEnts = entitiesWithComponent(thisFrame.viewMatrix);
+        auto viewMatrix = previousFrame.viewMatrix[viewMatrixEnts.front].get;
 
-        debug {
-            enforce(modelEnts == ents && vbufEnts == ents, 
-                    "Not all entities with a model have an associated vertex " ~
-                    "buffer. This is weird!");
-        }
+        VkCommandBufferBeginInfo beginInfo;
+        vkBeginCommandBuffer(thisFrame.commandBuffer, &beginInfo);
 
-        vkBeginCommandBuffer(nextFrame.commandBuffer);
-
-        foreach (e; ents) {
-            Uniforms ubo = {
-                projection : previousFrame.projection,
+        foreach (e; renderableEntities) {
+            Uniforms uniformData = {
+                projection : thisFrame.projection,
                 view       : viewMatrix,
-                model      : previousFrame.modelMatrix[e],
+                model      : thisFrame.modelMatrix[e].get,
             };
 
-            previousFrame.uniformBuffer;
-            // TODO
+            renderer.setUniformDataForFrame(thisFrame.imageIndex, 
+                                            uniformData, 
+                                            thisFrame.commandBuffer);
+
+            renderer.issueRenderCommands(thisFrame.vertexBuffer[e].get, 
+                                         thisFrame.commandBuffer,
+                                         thisFrame.imageIndex);
         }
 
-        auto endErrors = vkEndCommandBuffer(nextFrame.commandBuffer);
+        auto endErrors = vkEndCommandBuffer(thisFrame.commandBuffer);
         enforce(!endErrors);
     }
 
-
     // Set player's acceleration based on player input
-    nextFrame.acceleration[playerEntity] = vec3(0);
+    {
+        auto playerEntities = entitiesWithComponent(thisFrame.controlledByPlayer);
+        auto accelEntities  = entitiesWithComponent(thisFrame.acceleration);
+        auto ents = setIntersection(playerEntities, accelEntities);
 
-    if (nextFrame.actionRequested[nextFrameAction.MOVE_FORWARDS]) {
-        nextFrame.acceleration[playerEntity].get.z += MOVEMENT_IMPULSE.forwards;
+        foreach (e; ents) {
+            vec3 accel = vec3(0);
+
+            if (thisFrame.actionRequested[GameAction.MOVE_FORWARDS])  { accel.z += MOVEMENT_IMPULSE.forwards;  }
+            if (thisFrame.actionRequested[GameAction.MOVE_BACKWARDS]) { accel.z += MOVEMENT_IMPULSE.backwards; }
+            if (thisFrame.actionRequested[GameAction.MOVE_RIGHT])     { accel.x += MOVEMENT_IMPULSE.right;     }
+            if (thisFrame.actionRequested[GameAction.MOVE_LEFT])      { accel.x += MOVEMENT_IMPULSE.left;      }
+            if (thisFrame.actionRequested[GameAction.MOVE_UP])        { accel.y += MOVEMENT_IMPULSE.up;        }
+            if (thisFrame.actionRequested[GameAction.MOVE_DOWN])      { accel.y += MOVEMENT_IMPULSE.down;      }
+
+            // Output
+            thisFrame.acceleration[e] = accel;
+        }
     }
 
-    if (nextFrame.actionRequested[nextFrameAction.MOVE_BACKWARDS]) {
-        nextFrame.acceleration[playerEntity].get.z += MOVEMENT_IMPULSE.backwards;
-    }
-
-    if (nextFrame.actionRequested[nextFrameAction.MOVE_RIGHT]) {
-        nextFrame.acceleration[playerEntity].get.x += MOVEMENT_IMPULSE.right;
-    }
-
-    if (nextFrame.actionRequested[nextFrameAction.MOVE_LEFT]) {
-        nextFrame.acceleration[playerEntity].get.x += MOVEMENT_IMPULSE.left;
-    }
-
-    if (nextFrame.actionRequested[nextFrameAction.MOVE_UP]) {
-        nextFrame.acceleration[playerEntity].get.y += MOVEMENT_IMPULSE.up;
-    }
-
-    if (nextFrame.actionRequested[nextFrameAction.MOVE_DOWN]) {
-        nextFrame.acceleration[playerEntity].get.y += MOVEMENT_IMPULSE.down;
-    }
-
-    if (nextFrame.actionRequested[nextFrameAction.PRINT_DEBUG_INFO]) {
-        import std.experimental.logger;
-        debug log("Player position:     ", nextFrame.position[playerEntity].get);
-        debug log("Player velocity:     ", nextFrame.velocity[playerEntity].get);
-        debug log("Player acceleration: ", nextFrame.acceleration[playerEntity].get);
-    }
-
-    if (nextFrame.actionRequested[nextFrameAction.QUIT_GAME]) {
+    if (thisFrame.actionRequested[GameAction.QUIT_GAME]) {
         glfwSetWindowShouldClose(Globals.window, GLFW_TRUE);
     }
+
+    return thisFrame;
 }
 
 auto entitiesWithComponent(T)(T[] array) pure {

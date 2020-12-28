@@ -14,8 +14,9 @@ struct Globals {
     static uint  windowWidth      = 1280;
     static uint  windowHeight     = 720;
 
+    /// Returns the aspect ratio of the current window
     static float aspectRatio() {
-        return cast(float) framebufferWidth / cast(float) framebufferHeight;
+        return cast(float) windowWidth / cast(float) windowHeight;
     }
 
     static float verticalFieldOfView = 10.0;

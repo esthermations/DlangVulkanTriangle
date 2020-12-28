@@ -24,15 +24,15 @@ void keyPressed(GLFWwindow *window, int key, int scancode, int keyAction, int) {
     auto actionIsDesired = (keyAction == GLFW_PRESS || 
                             keyAction == GLFW_REPEAT);
 
-    Frame *frame = glfwGetWindowUserPointer();
+    Frame *frame = cast(Frame *) glfwGetWindowUserPointer(Globals.window);
     frame.actionRequested[gameAction] = actionIsDesired;
 
     debug log("Action ", gameAction, " => ", actionIsDesired);
 }
 
 void framebufferResized(GLFWwindow *window, int width, int height) {
-    Globals.framebufferWidth      = width;
-    Globals.framebufferHeight     = height;
-    Globals.framebufferWasResized = true;
+    Globals.windowHeight     = width;
+    Globals.windowWidth      = height;
+    Globals.windowWasResized = true;
 }
 
