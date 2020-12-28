@@ -25,10 +25,12 @@ void main() {
         alias f = initialFrame;
 
         f.position    [theStranger] = vec3(0);
+        f.scale       [theStranger] = 1.0;
         f.velocity    [theStranger] = vec3(0);
         f.acceleration[theStranger] = vec3(0);
 
         f.position    [player]       = vec3(0);
+        f.scale       [player]       = 1.0;
         f.velocity    [player]       = vec3(0);
         f.acceleration[player]       = vec3(0);
         f.controlledByPlayer[player] = true;
@@ -86,12 +88,14 @@ void main() {
         apiVersion       : VK_MAKE_VERSION(1, 1, 0),
     };
 
-    renderer.init(
+    renderer.initialise(
         appInfo, 
         requiredLayers, 
         requiredInstanceExtensions, 
         requiredDeviceExtensions,
     );
+
+    debug log("Finished initialising renderer!");
 
     // Import some 3D models
 
@@ -116,6 +120,7 @@ void main() {
         vertices.length,
     );
 
+
     /*
     ---------------------------------------------------------------------------
     --  Main Loop
@@ -127,7 +132,7 @@ void main() {
     Frame thisFrame = game.tick(initialFrame, renderer);
 
     while (!glfwWindowShouldClose(Globals.window)) {
-        thisFrame = tick(thisFrame, renderer);
+        thisFrame = game.tick(thisFrame, renderer);
         renderer.render(thisFrame);
     } // End of main loop
 

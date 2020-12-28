@@ -62,7 +62,11 @@ struct Vertex {
 
 struct Renderer {
 
-    // Renderer state
+    /*
+    ---------------------------------------------------------------------------
+    --  State
+    ---------------------------------------------------------------------------
+    */
 
     VkInstance       instance;
     VkSurfaceKHR     surface;
@@ -79,6 +83,13 @@ struct Renderer {
     VkCommandPool           commandPool;
     SwapchainWithDependents swapchain;
 
+    /*
+    ---------------------------------------------------------------------------
+    --  Functions
+    ---------------------------------------------------------------------------
+    */
+
+    /// Render (present) the given frame.
     void render(Frame frame) {
         VkSemaphore[1] waitSemaphores   = [frame.imageAvailableSemaphore];
         VkSemaphore[1] signalSemaphores = [frame.renderFinishedSemaphore];
@@ -156,18 +167,20 @@ struct Renderer {
     }
 
     /// Initialise the renderer state, ready to render buffers!
-    void init(VkApplicationInfo appInfo, 
-              const(char)*[] requiredLayers,
-              const(char)*[] requiredInstanceExtensions,
-              const(char)*[] requiredDeviceExtensions) 
-        in (haveAllRequiredLayers(requiredLayers))
+    void initialise(VkApplicationInfo appInfo, 
+                    const(char)*[] requiredLayers,
+                    const(char)*[] requiredInstanceExtensions,
+                    const(char)*[] requiredDeviceExtensions) 
     {
         // Load initial set of Vulkan functions
 
         {
-            bool vulkanLoadedOkay = loadGlobalLevelFunctions;
+            auto vulkanLoadedOkay = loadGlobalLevelFunctions;
             enforce(vulkanLoadedOkay, "Failed to load Vulkan functions!");
         }
+
+        enforce(haveAllRequiredLayers(requiredLayers));
+        debug log("We have all required extensions!");
 
         // Glfw Extensions
 
@@ -196,28 +209,28 @@ struct Renderer {
         }
 
         loadInstanceLevelFunctions(instance);
+        debug log("Instance created, and instance-level functions loaded!");
 
         // Set up debug messenger
 
-        this.debugMessenger = createDebugMessenger(instance);
+        this.debugMessenger = createDebugMessenger();
 
         // Create rendering surface
 
         {
             import glfw3.vulkan : glfwCreateWindowSurface;
             auto errors = cast(erupted.VkResult) glfwCreateWindowSurface(
-                instance, Globals.window, null, cast(ulong*)&surface);
+                instance, Globals.window, null, cast(ulong*)&this.surface);
             enforce(!errors, "Failed to create a window surface!");
         }
 
         // Select physical device
         
-        this.physicalDevice = selectPhysicalDevice(
-            this.instance, requiredDeviceExtensions, this.surface);
+        this.physicalDevice = selectPhysicalDevice(requiredDeviceExtensions);
 
         // Create the logical device
 
-        QueueFamilies queueFamilies = selectQueueFamilies(this.physicalDevice, this.surface);
+        QueueFamilies queueFamilies = selectQueueFamilies(this.physicalDevice);
         enforce(queueFamilies.isComplete);
 
         {
@@ -260,16 +273,16 @@ struct Renderer {
 
         }
 
+        // Load Vulkan functions for the VkDevice (via erupted)
+
+        loadDeviceLevelFunctions(logicalDevice);
+        debug log("Logical device created, and device-level functions loaded!");
+
         // Set queues for this device
 
         vkGetDeviceQueue(logicalDevice, queueFamilies.graphics.get, 0, &graphicsQueue);
         vkGetDeviceQueue(logicalDevice, queueFamilies.present.get, 0, &presentQueue);
         //vkGetDeviceQueue(logicalDevice, queueFamilies.transfer.get, 0, &transferQueue);
- 
-
-        // Load Vulkan functions for the VkDevice (via erupted)
-
-        loadDeviceLevelFunctions(logicalDevice);
 
         // Create descriptor set layout
 
@@ -324,7 +337,7 @@ struct Renderer {
 
     } // end init()
 
-    VkDebugUtilsMessengerEXT createDebugMessenger(VkInstance instance) {
+    VkDebugUtilsMessengerEXT createDebugMessenger() {
         extern (Windows) VkBool32 
         debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT      messageSeverity,
                       VkDebugUtilsMessageTypeFlagsEXT             messageType,
@@ -360,7 +373,7 @@ struct Renderer {
 
         VkDebugUtilsMessengerEXT ret;
         auto createErrors = vkCreateDebugUtilsMessengerEXT(
-            instance, &createInfo, null, &ret);
+            this.instance, &createInfo, null, &ret);
         enforce(!createErrors, "Failed to create messenger!");
 
         return ret;
@@ -368,7 +381,7 @@ struct Renderer {
 
 
     VkSwapchainKHR createSwapchain() {
-        SwapchainSupportDetails support = querySwapchainSupport();
+        SwapchainSupportDetails support = querySwapchainSupport(this.physicalDevice);
 
         immutable surfaceFormat = selectSurfaceFormat(support.formats);
         immutable presentMode   = selectPresentMode(support.presentModes);
@@ -442,7 +455,7 @@ struct Renderer {
         images.length = numImages;
         vkGetSwapchainImagesKHR(logicalDevice, swapchain, &numImages, images.ptr);
 
-        auto support = querySwapchainSupport();
+        auto support = querySwapchainSupport(this.physicalDevice);
         auto format  = selectSurfaceFormat(support.formats).format;
 
         // Image views
@@ -507,8 +520,8 @@ struct Renderer {
             assert(imageViews.length == uniformBuffers.length);
         }
 
-        uint numFramebuffers() {
-            return cast(uint) framebuffers.length;
+        uint numImages() {
+            return cast(uint) imageViews.length;
         }
     }
 
@@ -528,13 +541,16 @@ struct Renderer {
 
         ret.swapchain      = this.createSwapchain();
         ret.imageViews     = this.createImageViewsForSwapchain(ret.swapchain);
+
+        uint numImages = cast(uint) ret.imageViews.length;
+
         ret.renderPass     = this.createRenderPass(colourFormat, depthFormat);
         ret.pipeline       = this.createGraphicsPipeline(ret.renderPass);
         ret.depthResources = this.createDepthResources();
         ret.framebuffers   = this.createFramebuffers(ret.imageViews, ret.depthResources.imageView, ret.renderPass, extent);
-        ret.uniformBuffers = this.createUniformBuffers(ret.numFramebuffers());
-        ret.descriptorPool = this.createDescriptorPool(ret.numFramebuffers());
-        ret.descriptorSets = this.createDescriptorSets(ret.numFramebuffers(), ret.descriptorPool, descriptorSetLayout, ret.uniformBuffers);
+        ret.uniformBuffers = this.createUniformBuffers(numImages);
+        ret.descriptorPool = this.createDescriptorPool(numImages);
+        ret.descriptorSets = this.createDescriptorSets(numImages, ret.descriptorPool, descriptorSetLayout, ret.uniformBuffers);
 
         return ret;
     }
@@ -597,7 +613,7 @@ struct Renderer {
     }
 
     VkExtent2D getSurfaceExtent() {
-        const support = querySwapchainSupport();
+        const support = querySwapchainSupport(this.physicalDevice);
         return selectExtent(Globals.window, support.capabilities);
     }
 
@@ -731,7 +747,7 @@ struct Renderer {
 
     /// FIXME this should probably return a VkSurfaceFormatKHR.
     VkFormat getSurfaceFormat() {
-        return selectSurfaceFormat(querySwapchainSupport().formats).format;
+        return selectSurfaceFormat(querySwapchainSupport(this.physicalDevice).formats).format;
     }
 
     VkRenderPass createRenderPass(VkFormat colourFormat, VkFormat depthFormat) {
@@ -808,12 +824,6 @@ struct Renderer {
         return ret;
     }
 
-    /*
-    -------------------------------------------------------------------------------
-    --  selectQueueFamilies
-    -------------------------------------------------------------------------------
-    */
-
     struct QueueFamilies {
         Nullable!uint graphics;
         Nullable!uint present;
@@ -829,16 +839,14 @@ struct Renderer {
     /// The members of QueueFamilies are nullable -- this function may fail to
     /// find all the queue families in that struct. If it can't find them, they
     /// will be null.
-    QueueFamilies selectQueueFamilies(VkPhysicalDevice physicalDevice, 
-                                      VkSurfaceKHR     surface) 
-    {
+    QueueFamilies selectQueueFamilies(VkPhysicalDevice particularPhysicalDevice) {
         VkQueueFamilyProperties[] queueFamilies;
-        uint queueFamilyCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, 
+        uint queueFamilyCount;
+        vkGetPhysicalDeviceQueueFamilyProperties(particularPhysicalDevice, 
                                                  &queueFamilyCount, 
                                                  null);
         queueFamilies.length = queueFamilyCount;
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, 
+        vkGetPhysicalDeviceQueueFamilyProperties(particularPhysicalDevice, 
                                                  &queueFamilyCount, 
                                                  queueFamilies.ptr);
 
@@ -854,7 +862,7 @@ struct Renderer {
             }
 
             VkBool32 supportsPresent = false;
-            vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, 
+            vkGetPhysicalDeviceSurfaceSupportKHR(particularPhysicalDevice, 
                                                  cast(uint) i, 
                                                  surface, 
                                                  &supportsPresent);
@@ -884,20 +892,19 @@ struct Renderer {
     }
 
     /// Is this device suitable for our purposes?
-    bool isSuitable(VkPhysicalDevice physicalDevice, 
-                    const(char)*[]   requiredDeviceExtensions,
-                    VkSurfaceKHR     surface) 
+    bool isSuitable(VkPhysicalDevice particularPhysicalDevice, 
+                    const(char)*[]   requiredDeviceExtensions) 
     {
         // Confirm device is a discrete GPU
         VkPhysicalDeviceProperties deviceProperties;
-        vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+        vkGetPhysicalDeviceProperties(particularPhysicalDevice, &deviceProperties);
 
         if (deviceProperties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             return false;
         }
 
         // Confirm device supports our desired queue families
-        QueueFamilies families = selectQueueFamilies(physicalDevice, surface);
+        QueueFamilies families = selectQueueFamilies(particularPhysicalDevice);
         if (!families.isComplete) {
             return false;
         }
@@ -905,11 +912,11 @@ struct Renderer {
         // Confirm device supports our desired device extensions
         uint numExtensions;
         vkEnumerateDeviceExtensionProperties(
-            physicalDevice, null, &numExtensions, null);
+            particularPhysicalDevice, null, &numExtensions, null);
 
         VkExtensionProperties[] availableDeviceExtensions;
         availableDeviceExtensions.length = numExtensions;
-        vkEnumerateDeviceExtensionProperties(physicalDevice, 
+        vkEnumerateDeviceExtensionProperties(particularPhysicalDevice, 
                                              null, 
                                              &numExtensions, 
                                              availableDeviceExtensions.ptr);
@@ -949,7 +956,7 @@ struct Renderer {
         // Confirm swapchain support
         bool swapchainSuitable;
 
-        SwapchainSupportDetails swapchainSupport = querySwapchainSupport();
+        SwapchainSupportDetails swapchainSupport = querySwapchainSupport(particularPhysicalDevice);
         swapchainSuitable = swapchainSupport.formats.length      != 0 && 
                             swapchainSupport.presentModes.length != 0;
 
@@ -962,21 +969,19 @@ struct Renderer {
 
     /// Select a physical device available in the instance based on whether it
     /// satisfies isSuitable().
-    VkPhysicalDevice selectPhysicalDevice(VkInstance     instance,
-                                          const(char)*[] requiredDeviceExtensions,
-                                          VkSurfaceKHR   surface) 
-    {
+    VkPhysicalDevice selectPhysicalDevice(const(char)*[] requiredDeviceExtensions) {
         uint numPhysicalDevices;
-        vkEnumeratePhysicalDevices(instance, &numPhysicalDevices, null);
+        vkEnumeratePhysicalDevices(this.instance, &numPhysicalDevices, null);
         enforce(numPhysicalDevices > 0, "Couldn't find any devices!!");
 
         VkPhysicalDevice[] physicalDevices;
         physicalDevices.length = numPhysicalDevices;
-        vkEnumeratePhysicalDevices(instance, &numPhysicalDevices, 
+        vkEnumeratePhysicalDevices(this.instance, &numPhysicalDevices, 
                                    physicalDevices.ptr);
 
         foreach (physicalDevice; physicalDevices) {
-            if (isSuitable(physicalDevice, requiredDeviceExtensions, surface)) {
+            debug log("Got here");
+            if (isSuitable(physicalDevice, requiredDeviceExtensions)) {
                 return physicalDevice;
             }
         }
@@ -991,25 +996,25 @@ struct Renderer {
         VkPresentModeKHR         []presentModes;
     }
 
-    SwapchainSupportDetails querySwapchainSupport() {
+    SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice particularPhysicalDevice) {
         SwapchainSupportDetails ret;
 
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-            this.physicalDevice, this.surface, &ret.capabilities);
+            particularPhysicalDevice, this.surface, &ret.capabilities);
 
         uint numFormats;
         vkGetPhysicalDeviceSurfaceFormatsKHR(
-            this.physicalDevice, this.surface, &numFormats, null);
+            particularPhysicalDevice, this.surface, &numFormats, null);
         ret.formats.length = numFormats;
         vkGetPhysicalDeviceSurfaceFormatsKHR(
-            this.physicalDevice, this.surface, &numFormats, ret.formats.ptr);
+            particularPhysicalDevice, this.surface, &numFormats, ret.formats.ptr);
 
         uint numPresentModes;
         vkGetPhysicalDeviceSurfacePresentModesKHR(
-            this.physicalDevice, this.surface, &numPresentModes, null);
+            particularPhysicalDevice, this.surface, &numPresentModes, null);
         ret.presentModes.length = numPresentModes;
         vkGetPhysicalDeviceSurfacePresentModesKHR(
-            this.physicalDevice, 
+            particularPhysicalDevice, 
             this.surface, 
             &numPresentModes, 
             ret.presentModes.ptr

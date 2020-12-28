@@ -123,11 +123,11 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
 
     // Update velocities
 
-    {
+    void updateVelocities() {
         auto velEnts = entitiesWithComponent(thisFrame.velocity);
         auto accEnts = entitiesWithComponent(thisFrame.acceleration);
         auto ents    = setIntersection(velEnts, accEnts);
-        debug log("updateVelocity: ", ents);
+        debug log(ents);
         foreach (e; ents) {
             thisFrame.velocity[e] += thisFrame.acceleration[e];
         }
@@ -135,11 +135,11 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
 
     // Update positions
 
-    {
+    void updatePositions() {
         auto posEnts = entitiesWithComponent(thisFrame.position);
         auto velEnts = entitiesWithComponent(thisFrame.velocity);
         auto ents    = setIntersection(posEnts, velEnts);
-        debug log("updatePosition: ", ents);
+        debug log(ents);
         foreach (e; ents) {
             thisFrame.position[e] += thisFrame.velocity[e];
         }
@@ -147,11 +147,11 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
 
     // Update model matrices
 
-    {
+    void updateModelMatrices() {
         auto posEnts = entitiesWithComponent(thisFrame.position);
         auto sclEnts = entitiesWithComponent(thisFrame.scale);
         auto ents    = setIntersection(posEnts, sclEnts);
-        debug log("updateViewMatrix: ", ents);
+        debug log(ents);
         foreach (e; ents) {
             auto scale    = thisFrame.scale[e].get;
             auto position = thisFrame.position[e].get;
@@ -161,20 +161,34 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         }
     }
 
+    // Update camera view matrices
+
+    void updateViewMatrices() {
+        auto lookAtEnts = entitiesWithComponent(thisFrame.lookAtTarget);
+        auto posEnts    = entitiesWithComponent(thisFrame.position);
+        auto cameras    = setIntersection(lookAtEnts, posEnts);
+        debug log(cameras);
+        foreach (e; cameras) {
+            vec3 eyePos = thisFrame.position[e].get;
+            vec3 targetPos = thisFrame.lookAtTarget[e].get;
+            thisFrame.viewMatrix[e] = lookAt(eyePos, targetPos, vec3(0, 1.up, 0));
+        }
+    }
 
     // Issue render commands
 
-    {
+    void issueRenderCommands() {
         auto modelEnts = entitiesWithComponent(thisFrame.modelMatrix);
         auto vbufEnts  = entitiesWithComponent(thisFrame.vertexBuffer);
         auto renderableEntities = setIntersection(modelEnts, vbufEnts);
-
+        debug log(renderableEntities);
 
         // NOTE: We're explicitly assuming here that only one entity (the
         // camera) will have a view matrix. Or at least, if there are multiple
         // view matrices, we're always using the first one.
         auto viewMatrixEnts = entitiesWithComponent(thisFrame.viewMatrix);
-        auto viewMatrix = previousFrame.viewMatrix[viewMatrixEnts.front].get;
+        auto viewMatrix = thisFrame.viewMatrix[viewMatrixEnts.front].get;
+        debug log("Camera entity is: ", viewMatrixEnts.front);
 
         VkCommandBufferBeginInfo beginInfo;
         vkBeginCommandBuffer(thisFrame.commandBuffer, &beginInfo);
@@ -200,7 +214,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     }
 
     // Set player's acceleration based on player input
-    {
+    void updatePlayerAcceleration() {
         auto playerEntities = entitiesWithComponent(thisFrame.controlledByPlayer);
         auto accelEntities  = entitiesWithComponent(thisFrame.acceleration);
         auto ents = setIntersection(playerEntities, accelEntities);
@@ -220,6 +234,12 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         }
     }
 
+    updateVelocities();
+    updatePositions();
+    updateModelMatrices();
+    updateViewMatrices();
+    updatePlayerAcceleration();
+
     if (thisFrame.actionRequested[GameAction.QUIT_GAME]) {
         glfwSetWindowShouldClose(Globals.window, GLFW_TRUE);
     }
@@ -233,7 +253,7 @@ auto entitiesWithComponent(T)(T[] array) pure {
     auto indices = iota(0, array.length, 1); 
     auto ret = indices.filter!(i => !array[i].isNull);
     import std.experimental.logger;
-    debug log(" returning ", ret);
+    //debug log(" returning ", ret);
     return ret;
 }
 

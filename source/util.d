@@ -63,6 +63,8 @@ unittest {
     assert(approxEqual(mat4(1.0), mat4(1.0001)));
 }
 
+/// My own lookAt implementation, taking into account that GLM's matrices are
+/// stored row-major.
 mat4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
 
     vec3 normalise(vec3 v) pure {
