@@ -120,6 +120,7 @@ void main() {
         vertices.length,
     );
 
+    initialFrame.vertexBuffer[player] = playerVertexBuffer;
 
     /*
     ---------------------------------------------------------------------------
@@ -131,10 +132,10 @@ void main() {
 
     Frame thisFrame = game.tick(initialFrame, renderer);
 
-    while (!glfwWindowShouldClose(Globals.window)) {
+    //while (!glfwWindowShouldClose(Globals.window)) {
         thisFrame = game.tick(thisFrame, renderer);
         renderer.render(thisFrame);
-    } // End of main loop
+    //} // End of main loop
 
     renderer.cleanup();
 }

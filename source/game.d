@@ -28,19 +28,11 @@ enum MOVEMENT_IMPULSE = 0.001;
 
 struct Frame {
 
-    // Renderer state
+    /// An index into the Vulkan swapchain corresponding to the image this frame
+    /// will be rendered into.
+    uint imageIndex; 
 
-    mat4 projection;
-    mat4 view;
-
-    uint imageIndex;
-
-    UniformBuffer uniformBuffer;
-
-    VkSemaphore imageAvailableSemaphore;
-    VkSemaphore renderFinishedSemaphore;
-
-    VkCommandBuffer commandBuffer;
+    mat4 projection; /// Projection uniform
 
     // Components
 
@@ -118,6 +110,8 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         actionRequested    : [false],
     };
 
+    thisFrame.imageIndex = renderer.acquireNextImageIndex(previousFrame.imageIndex);
+
     glfwSetWindowUserPointer(Globals.window, &thisFrame);
     glfwPollEvents();
 
@@ -177,7 +171,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
 
     // Issue render commands
 
-    void issueRenderCommands() {
+    void renderVertexBuffers() {
         auto modelEnts = entitiesWithComponent(thisFrame.modelMatrix);
         auto vbufEnts  = entitiesWithComponent(thisFrame.vertexBuffer);
         auto renderableEntities = setIntersection(modelEnts, vbufEnts);
@@ -190,8 +184,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         auto viewMatrix = thisFrame.viewMatrix[viewMatrixEnts.front].get;
         debug log("Camera entity is: ", viewMatrixEnts.front);
 
-        VkCommandBufferBeginInfo beginInfo;
-        vkBeginCommandBuffer(thisFrame.commandBuffer, &beginInfo);
+        renderer.beginCommandsForFrame(thisFrame.imageIndex);
 
         foreach (e; renderableEntities) {
             Uniforms uniformData = {
@@ -201,16 +194,13 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
             };
 
             renderer.setUniformDataForFrame(thisFrame.imageIndex, 
-                                            uniformData, 
-                                            thisFrame.commandBuffer);
+                                            uniformData);
 
-            renderer.issueRenderCommands(thisFrame.vertexBuffer[e].get, 
-                                         thisFrame.commandBuffer,
-                                         thisFrame.imageIndex);
+            renderer.issueRenderCommands(thisFrame.imageIndex,
+                                         thisFrame.vertexBuffer[e].get);
         }
 
-        auto endErrors = vkEndCommandBuffer(thisFrame.commandBuffer);
-        enforce(!endErrors);
+        renderer.endCommandsForFrame(thisFrame.imageIndex);
     }
 
     // Set player's acceleration based on player input
@@ -239,6 +229,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     updateModelMatrices();
     updateViewMatrices();
     updatePlayerAcceleration();
+    renderVertexBuffers();
 
     if (thisFrame.actionRequested[GameAction.QUIT_GAME]) {
         glfwSetWindowShouldClose(Globals.window, GLFW_TRUE);
