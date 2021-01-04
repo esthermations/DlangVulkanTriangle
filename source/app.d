@@ -6,18 +6,24 @@ import glfw3.api;
 import gl3n.linalg;
 
 import util;
-import globals;
+static import globals;
 import game;
 import renderer;
 
 void main() {
 
     import core.time;
-    Globals.programT0 = MonoTime.currTime();
+    globals.programT0 = MonoTime.currTime();
 
     Frame initialFrame;
 
     initialFrame.imageIndex = 0;
+    initialFrame.projection = util.perspective(
+        globals.verticalFieldOfView, 
+        globals.aspectRatio, 
+        globals.nearPlane, 
+        globals.farPlane
+    );
 
     auto player      = initialFrame.createEntity;
     auto camera      = initialFrame.createEntity;
@@ -26,13 +32,8 @@ void main() {
     {
         alias f = initialFrame;
 
-        f.position    [theStranger] = vec3(0);
-        f.scale       [theStranger] = 1.0;
-        f.velocity    [theStranger] = vec3(0);
-        f.acceleration[theStranger] = vec3(0);
-
         f.position    [player]       = vec3(0);
-        f.scale       [player]       = 1.0;
+        f.scale       [player]       = 10.0;
         f.velocity    [player]       = vec3(0);
         f.acceleration[player]       = vec3(0);
         f.controlledByPlayer[player] = true;
@@ -51,19 +52,19 @@ void main() {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    Globals.window = glfwCreateWindow(
-        Globals.windowWidth, 
-        Globals.windowHeight, 
+    globals.window = glfwCreateWindow(
+        globals.windowWidth, 
+        globals.windowHeight, 
         "Carl", 
         null, 
         null
     );
-    scope (exit) glfwDestroyWindow(Globals.window);
+    scope (exit) glfwDestroyWindow(globals.window);
 
     {
         import glfw_callbacks;
-        glfwSetFramebufferSizeCallback(Globals.window, &framebufferResized);
-        glfwSetKeyCallback(Globals.window, &keyPressed);
+        glfwSetFramebufferSizeCallback(globals.window, &framebufferResized);
+        glfwSetKeyCallback(globals.window, &keyPressed);
     }
 
     // Init renderer
@@ -115,14 +116,22 @@ void main() {
 
     // Create vertex buffer using those vertices
 
-    auto playerVertexBuffer = renderer.createBuffer!Vertex(
+    auto barrelVertexBuffer = renderer.createBuffer!Vertex(
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
         ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
         vertices.length,
     );
 
-    initialFrame.vertexBuffer[player] = playerVertexBuffer;
+    renderer.setBufferData(barrelVertexBuffer, vertices);
+    initialFrame.vertexBuffer[player]      = barrelVertexBuffer;
+
+    foreach (i; 0 .. 10) {
+        auto e = initialFrame.createEntity();
+        initialFrame.vertexBuffer[e] = barrelVertexBuffer;
+        initialFrame.position    [e] = vec3(i * 0.3, 0, 0);
+        initialFrame.scale       [e] = 5.0 + (i % 5);
+    }
 
     /*
     ---------------------------------------------------------------------------
@@ -136,11 +145,11 @@ void main() {
 
     import core.thread.osthread;
 
-    while (!glfwWindowShouldClose(Globals.window)) {
+    while (!glfwWindowShouldClose(globals.window)) {
         renderer.render(thisFrame);
         thisFrame = game.tick(thisFrame, renderer);
     } // End of main loop
 
-    renderer.cleanupBuffer!(Vertex)(playerVertexBuffer);
+    renderer.cleanupBuffer!(Vertex)(barrelVertexBuffer);
     renderer.cleanup();
 }

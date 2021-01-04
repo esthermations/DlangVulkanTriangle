@@ -112,6 +112,8 @@ unittest {
     assert(approxEqual(view, expected));
 }
 
+/// Don't use this one. Use the one that takes fovDegrees, below. This is
+/// correct but not really user-friendly.
 mat4 perspective(float top, float bottom, float left, float right, float near, float far) pure {
     immutable dx = right - left;    
     immutable dy = top - bottom;
@@ -130,6 +132,8 @@ mat4 perspective(float top, float bottom, float left, float right, float near, f
     return ret;
 }
 
+/// Calculate a projection matrix using the given fov, aspect ratio, and near
+/// and far planes.
 mat4 perspective(float fovDegrees, float aspectRatio, float near, float far) pure {
     import gl3n.math : radians;
     import std.math  : tan;

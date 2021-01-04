@@ -7,7 +7,7 @@ import std.exception : enforce;
 import glfw3.api;
 import gl3n.linalg; 
 import erupted;
-import globals;
+static import globals;
 
 import util;
 import renderer;
@@ -98,6 +98,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     import std.experimental.logger;
 
     Frame thisFrame = {
+        projection         : previousFrame.projection,
         position           : previousFrame.position,
         velocity           : previousFrame.velocity,
         acceleration       : previousFrame.acceleration,
@@ -112,7 +113,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
 
     thisFrame.imageIndex = renderer.acquireNextImageIndex(previousFrame.imageIndex);
 
-    glfwSetWindowUserPointer(Globals.window, &thisFrame);
+    glfwSetWindowUserPointer(globals.window, &thisFrame);
     glfwPollEvents();
 
     // Update velocities
@@ -169,7 +170,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         }
     }
 
-    // Issue render commands
+    // Render vertex buffers
 
     void renderVertexBuffers() {
         auto modelEnts = entitiesWithComponent(thisFrame.modelMatrix);
@@ -232,7 +233,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     renderVertexBuffers();
 
     if (thisFrame.actionRequested[GameAction.QUIT_GAME]) {
-        glfwSetWindowShouldClose(Globals.window, GLFW_TRUE);
+        glfwSetWindowShouldClose(globals.window, GLFW_TRUE);
     }
 
     return thisFrame;

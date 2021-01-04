@@ -10,7 +10,7 @@ import gl3n.linalg;
 import erupted;
 import erupted.vulkan_lib_loader;
 
-import globals;
+static import globals;
 import game;
 
 // Extension function pointers -- these need to be loaded before called
@@ -130,7 +130,7 @@ struct Renderer {
 
         if (queuePresentResult == VK_ERROR_OUT_OF_DATE_KHR || 
             queuePresentResult == VK_SUBOPTIMAL_KHR || 
-            Globals.windowWasResized) 
+            globals.windowWasResized) 
         {
             debug log("Recreating swapchain.");
             this.swapchain = recreateSwapchainWithDependents();
@@ -218,7 +218,7 @@ struct Renderer {
         {
             import glfw3.vulkan : glfwCreateWindowSurface;
             auto errors = cast(erupted.VkResult) glfwCreateWindowSurface(
-                instance, Globals.window, null, cast(ulong*)&this.surface);
+                instance, globals.window, null, cast(ulong*)&this.surface);
             enforce(!errors, "Failed to create a window surface!");
         }
 
@@ -324,8 +324,8 @@ struct Renderer {
                 flags            : VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
             };
 
-            auto errors = logicalDevice.vkCreateCommandPool(
-                &createInfo, null, &commandPool);
+            auto errors = vkCreateCommandPool(
+                logicalDevice, &createInfo, null, &commandPool);
             enforce(!errors, "Failed to create command pool.");
         }
 
@@ -383,7 +383,7 @@ struct Renderer {
 
         immutable surfaceFormat = selectSurfaceFormat(support.formats);
         immutable presentMode   = selectPresentMode(support.presentModes);
-        immutable extent        = selectExtent(Globals.window, support.capabilities);
+        immutable extent        = selectExtent(globals.window, support.capabilities);
         immutable imageCount    = support.capabilities.minImageCount;
 
         VkSwapchainCreateInfoKHR swapchainCreateInfo = {
@@ -675,7 +675,7 @@ struct Renderer {
 
     VkExtent2D getSurfaceExtent() {
         const support = querySwapchainSupport(this.physicalDevice);
-        return selectExtent(Globals.window, support.capabilities);
+        return selectExtent(globals.window, support.capabilities);
     }
 
     /// Set up the graphics pipeline for our application. There are a lot of
@@ -817,7 +817,7 @@ struct Renderer {
             flags          : 0,
             format         : colourFormat,
             samples        : VK_SAMPLE_COUNT_1_BIT,
-            loadOp         : VK_ATTACHMENT_LOAD_OP_CLEAR,
+            loadOp         : VK_ATTACHMENT_LOAD_OP_LOAD,
             storeOp        : VK_ATTACHMENT_STORE_OP_STORE,
             stencilLoadOp  : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             stencilStoreOp : VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -1253,44 +1253,25 @@ struct Renderer {
         return ret;
     }
 
+    /// Set the data in this buffer to the given value
+    void setBufferData(DataT)(Buffer!DataT buffer, DataT[] data) {
+        void *dst;
+        vkMapMemory(this.logicalDevice, buffer.memory, 0, buffer.size, 0, &dst);
+        import core.stdc.string : memcpy;
+        memcpy(dst, data.ptr, (data.length * DataT.sizeof));
+        vkUnmapMemory(this.logicalDevice, buffer.memory);
+    }
+
     /// Perform a render pass (vkCmdBeginRenderPass) using the contents of this
     /// buffer. All commands are associated with the frame identified by
     /// imageIndex.
     void issueRenderCommands(DataT)(uint imageIndex, Buffer!DataT buffer) {
-        // Start a render pass
-        VkRenderPassBeginInfo info = {
-            renderPass  : this.swapchain.renderPass,
-            framebuffer : this.swapchain.framebuffers[imageIndex],
-            renderArea  : {
-                offset : {0, 0},
-                extent : this.getSurfaceExtent(),
-            },
-            clearValueCount : cast(uint) Globals.clearValues.length,
-            pClearValues    : Globals.clearValues.ptr,
-        };
-
         VkBuffer[1]     buffers = [buffer.buffer];
         VkDeviceSize[1] offsets = [0];
 
         auto cb = this.swapchain.commandBuffers[imageIndex];
-
-        vkCmdBeginRenderPass  (cb, &info, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline     (cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this.swapchain.pipeline);
         vkCmdBindVertexBuffers(cb, 0, 1, buffers.ptr, offsets.ptr);
-
-        vkCmdBindDescriptorSets(
-            this.swapchain.commandBuffers[imageIndex], 
-            VK_PIPELINE_BIND_POINT_GRAPHICS, 
-            this.pipelineLayout, 
-            0, 
-            1, 
-            &this.swapchain.descriptorSets[imageIndex], 
-            0, 
-            null
-        );
-
-        vkCmdDraw(this.swapchain.commandBuffers[imageIndex], buffer.elementCount(), 1, 0, 0);
-        vkCmdEndRenderPass(this.swapchain.commandBuffers[imageIndex]);
+        vkCmdDraw             (cb, buffer.elementCount(), 1, 0, 0);
     }
 
     void issueUpdateCommand(DataT)(uint imageIndex, 
@@ -1309,24 +1290,52 @@ struct Renderer {
     void beginCommandsForFrame(uint imageIndex) {
         auto cb = this.swapchain.commandBuffers[imageIndex];
 
+        // Wait for the command buffer to be ready (signalled by vkQueueSubmit)
         vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence, false, ulong.max);
+        // Reset the fence for next time
         vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence);
-
+        // Reset the command buffer, putting it in the Initial state
         vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);
+
+        // Begin the command buffer, putting it in the Recording state
         VkCommandBufferBeginInfo beginInfo = {
             flags : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
+
         vkBeginCommandBuffer(cb, &beginInfo);
+
+        // Start a render pass
+        VkRenderPassBeginInfo info = {
+            renderPass  : this.swapchain.renderPass,
+            framebuffer : this.swapchain.framebuffers[imageIndex],
+            renderArea  : {
+                offset : {0, 0},
+                extent : this.getSurfaceExtent(),
+            },
+            clearValueCount : cast(uint) globals.clearValues.length,
+            pClearValues    : globals.clearValues.ptr,
+        };
+
+        vkCmdBeginRenderPass   (cb, &info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline      (cb, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                                this.swapchain.pipeline);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                                this.pipelineLayout, 0, 1, 
+                                &this.swapchain.descriptorSets[imageIndex], 0, 
+                                null);
     }
 
     /// Indicate that we are finished recording rendering commands for this
     /// frame, and the command buffer may be submitted.
     void endCommandsForFrame(uint imageIndex) {
         auto cb = this.swapchain.commandBuffers[imageIndex];
+        vkCmdEndRenderPass(cb);
         auto errors = vkEndCommandBuffer(cb);
         enforce(!errors);
     }
 
+    /// Select a memory type that satisfies the requested properties. 
+    /// TODO: wtf does this actually do lmao document this better
     uint findMemoryType(uint typeFilter, 
                         VkMemoryPropertyFlags requestedProperties) 
     {
@@ -1342,7 +1351,6 @@ struct Renderer {
             );
 
             if (matchesFilter && allPropertiesAvailable) {
-                //debug log("Using memory type ", i);
                 return i;
             }
         }

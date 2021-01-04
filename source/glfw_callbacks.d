@@ -3,7 +3,7 @@ module glfw_callbacks;
 import std.experimental.logger;
 
 import glfw3.api;
-import globals;
+static import globals;
 import game;
 
 extern (C) nothrow @nogc:
@@ -24,15 +24,15 @@ void keyPressed(GLFWwindow *window, int key, int scancode, int keyAction, int) {
     auto actionIsDesired = (keyAction == GLFW_PRESS || 
                             keyAction == GLFW_REPEAT);
 
-    Frame *frame = cast(Frame *) glfwGetWindowUserPointer(Globals.window);
+    Frame *frame = cast(Frame *) glfwGetWindowUserPointer(globals.window);
     frame.actionRequested[gameAction] = actionIsDesired;
 
     debug log("Action ", gameAction, " => ", actionIsDesired);
 }
 
 void framebufferResized(GLFWwindow *window, int width, int height) {
-    Globals.windowHeight     = width;
-    Globals.windowWidth      = height;
-    Globals.windowWasResized = true;
+    globals.windowHeight     = width;
+    globals.windowWidth      = height;
+    globals.windowWasResized = true;
 }
 
