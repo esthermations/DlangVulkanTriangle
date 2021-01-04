@@ -17,6 +17,8 @@ void main() {
 
     Frame initialFrame;
 
+    initialFrame.imageIndex = 0;
+
     auto player      = initialFrame.createEntity;
     auto camera      = initialFrame.createEntity;
     auto theStranger = initialFrame.createEntity;
@@ -132,10 +134,13 @@ void main() {
 
     Frame thisFrame = game.tick(initialFrame, renderer);
 
-    //while (!glfwWindowShouldClose(Globals.window)) {
-        thisFrame = game.tick(thisFrame, renderer);
-        renderer.render(thisFrame);
-    //} // End of main loop
+    import core.thread.osthread;
 
+    while (!glfwWindowShouldClose(Globals.window)) {
+        renderer.render(thisFrame);
+        thisFrame = game.tick(thisFrame, renderer);
+    } // End of main loop
+
+    renderer.cleanupBuffer!(Vertex)(playerVertexBuffer);
     renderer.cleanup();
 }

@@ -36,15 +36,15 @@ struct Frame {
 
     // Components
 
-    Nullable!vec3[]         position;
-    Nullable!vec3[]         velocity;
-    Nullable!vec3[]         acceleration;
-    Nullable!vec3[]         lookAtTarget;
-    Nullable!bool[]         controlledByPlayer;
-    Nullable!float[]        scale;
-    Nullable!mat4[]         modelMatrix;
-    Nullable!mat4[]         viewMatrix;
-    Nullable!VertexBuffer[] vertexBuffer;
+    Nullable!vec3         []position;
+    Nullable!vec3         []velocity;
+    Nullable!vec3         []acceleration;
+    Nullable!vec3         []lookAtTarget;
+    Nullable!bool         []controlledByPlayer;
+    Nullable!float        []scale;
+    Nullable!mat4         []modelMatrix;
+    Nullable!mat4         []viewMatrix;
+    Nullable!VertexBuffer []vertexBuffer;
 
     /// How many entities exist in this frame?
     auto numEntities() immutable {

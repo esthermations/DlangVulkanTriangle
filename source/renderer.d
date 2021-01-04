@@ -29,8 +29,9 @@ struct Uniforms {
 }
 
 struct Vertex {
-    vec3 position;
-    vec3 normal;
+    // Ensure updates here are reflected in Vertex.getAttributeDescription
+    vec3 position; /// Model-space position of this vertex
+    vec3 normal;   /// Vertex normal vector
 
     static auto getBindingDescription() {
         VkVertexInputBindingDescription ret = {
@@ -91,37 +92,33 @@ struct Renderer {
 
     /// Render (present) the given frame.
     void render(Frame frame) {
-        immutable frameID = frame.imageIndex;
-        VkSemaphore[1] waitSemaphores   = [this.swapchain.imageAvailableSemaphores[frameID]];
-        VkSemaphore[1] signalSemaphores = [this.swapchain.renderFinishedSemaphores[frameID]];
-
-        VkPipelineStageFlags[1] waitStages = [VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT];
+        VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
         VkSubmitInfo submitInfo = {
             waitSemaphoreCount   : 1,
-            pWaitSemaphores      : waitSemaphores.ptr,
-            pWaitDstStageMask    : waitStages.ptr,
+            pWaitSemaphores      : &this.swapchain.imageAvailableSemaphore,
+            pWaitDstStageMask    : &waitStages,
             signalSemaphoreCount : 1,
-            pSignalSemaphores    : signalSemaphores.ptr,
+            pSignalSemaphores    : &this.swapchain.renderFinishedSemaphore,
             commandBufferCount   : 1,
-            pCommandBuffers      : &this.swapchain.commandBuffers[frameID],
+            pCommandBuffers      : &this.swapchain.commandBuffers[frame.imageIndex],
         };
 
         {
-            auto errors = vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+            auto errors = vkQueueSubmit(this.graphicsQueue, 1, &submitInfo, this.swapchain.commandBufferReadyFence);
             enforce(!errors);
         }
 
-        VkSwapchainKHR[1] swapchains = [swapchain.swapchain];
-
         VkPresentInfoKHR presentInfo = {
             waitSemaphoreCount : 1,
-            pWaitSemaphores    : signalSemaphores.ptr,
+            pWaitSemaphores    : &this.swapchain.renderFinishedSemaphore,
             swapchainCount     : 1,
-            pSwapchains        : swapchains.ptr, 
+            pSwapchains        : &this.swapchain.swapchain, 
             pImageIndices      : &frame.imageIndex,
             pResults           : null,
         };
+
+        // Present the queue, and handle window resizes if needed
 
         auto queuePresentResult = vkQueuePresentKHR(presentQueue, &presentInfo);
 
@@ -136,9 +133,9 @@ struct Renderer {
             Globals.windowWasResized) 
         {
             debug log("Recreating swapchain.");
-            this.swapchain = recreateSwapchain();
+            this.swapchain = recreateSwapchainWithDependents();
         }
-    }
+    } // end render()
 
     /// Will our Vulkan instance support all the provided layers?
     bool haveAllRequiredLayers(const(char)*[] requiredLayers) {
@@ -324,7 +321,7 @@ struct Renderer {
         {
             VkCommandPoolCreateInfo createInfo = {
                 queueFamilyIndex : queueFamilies.graphics.get,
-                flags            : 0,
+                flags            : VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
             };
 
             auto errors = logicalDevice.vkCreateCommandPool(
@@ -344,11 +341,11 @@ struct Renderer {
                       VkDebugUtilsMessageTypeFlagsEXT             messageType,
                       const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, 
                       void*                                       pUserData) 
-                      nothrow @nogc 
+                      nothrow @nogc
         {
             import core.stdc.stdio : printf, fflush, stdout;
-
-            printf("validation layer: %s\n", pCallbackData.pMessage);
+            printf("Vulkan Spec Violation: %s\n", pCallbackData.pMessageIdName);
+            printf(" -> %s\n", pCallbackData.pMessage);
             fflush(stdout);
             return VK_FALSE;
         }
@@ -483,13 +480,16 @@ struct Renderer {
 
         vkFreeCommandBuffers(this.logicalDevice, this.commandPool, this.swapchain.numImages(), this.swapchain.commandBuffers.ptr);
 
-        foreach (s; this.swapchain.imageAvailableSemaphores) {
-            vkDestroySemaphore(this.logicalDevice, s, null);
-        }
+        //foreach (s; this.swapchain.imageAvailableSemaphores) {
+        //    vkDestroySemaphore(this.logicalDevice, s, null);
+        //}
 
-        foreach (s; this.swapchain.renderFinishedSemaphores) {
-            vkDestroySemaphore(this.logicalDevice, s, null);
-        }
+        //foreach (s; this.swapchain.renderFinishedSemaphores) {
+        //    vkDestroySemaphore(this.logicalDevice, s, null);
+        //}
+        vkDestroySemaphore(this.logicalDevice, this.swapchain.imageAvailableSemaphore, null);
+        vkDestroySemaphore(this.logicalDevice, this.swapchain.renderFinishedSemaphore, null);
+        vkDestroyFence    (this.logicalDevice, this.swapchain.commandBufferReadyFence, null);
 
         vkDestroyPipeline(this.logicalDevice, this.swapchain.pipeline, null);
 
@@ -522,21 +522,25 @@ struct Renderer {
         VkPipeline        pipeline;
         
         // Per-image (per-frame) data
-        VkImageView[]     imageViews;
-        VkFramebuffer[]   framebuffers;
-        VkDescriptorSet[] descriptorSets;
-        UniformBuffer[]   uniformBuffers;
-        VkCommandBuffer[] commandBuffers;
-        VkSemaphore[]     imageAvailableSemaphores;
-        VkSemaphore[]     renderFinishedSemaphores;
+        VkImageView     []imageViews;
+        VkFramebuffer   []framebuffers;
+        VkDescriptorSet []descriptorSets;
+        UniformBuffer   []uniformBuffers;
+        VkCommandBuffer []commandBuffers;
+        /// Signalled when the commandBuffer for this image can be submitted
+        VkSemaphore     imageAvailableSemaphore;
+        /// Signalled when this frame has been submitted to be presented
+        VkSemaphore     renderFinishedSemaphore;
+        /// Signalled when the command buffer can be re-used
+        VkFence         commandBufferReadyFence;
 
         invariant {
             assert(imageViews.length == framebuffers.length);
             assert(imageViews.length == descriptorSets.length);
             assert(imageViews.length == uniformBuffers.length);
             assert(imageViews.length == commandBuffers.length);
-            assert(imageViews.length == imageAvailableSemaphores.length);
-            assert(imageViews.length == renderFinishedSemaphores.length);
+            //assert(imageViews.length == imageAvailableSemaphores.length);
+            //assert(imageViews.length == renderFinishedSemaphores.length);
         }
 
         uint numImages() {
@@ -569,18 +573,36 @@ struct Renderer {
         ret.framebuffers   = this.createFramebuffers(ret.imageViews, ret.depthResources.imageView, ret.renderPass);
         ret.uniformBuffers = this.createUniformBuffers(numImages);
         ret.descriptorPool = this.createDescriptorPool(numImages);
-        ret.descriptorSets = this.createDescriptorSets(numImages, ret.descriptorPool, descriptorSetLayout, ret.uniformBuffers);
+        ret.descriptorSets = this.createDescriptorSets(numImages, ret.descriptorPool, this.descriptorSetLayout, ret.uniformBuffers);
         ret.commandBuffers = this.createCommandBuffers(numImages);
-        ret.imageAvailableSemaphores = this.createSemaphores(numImages);
-        ret.renderFinishedSemaphores = this.createSemaphores(numImages);
+        ret.imageAvailableSemaphore = this.createSemaphore();
+        ret.renderFinishedSemaphore = this.createSemaphore();
+        ret.commandBufferReadyFence = this.createFence();
 
         return ret;
     }
 
-    SwapchainWithDependents recreateSwapchain() {
+    SwapchainWithDependents recreateSwapchainWithDependents() {
         vkDeviceWaitIdle(this.logicalDevice);
         this.cleanupSwapchainWithDependents();
         return createSwapchainWithDependents();
+    }
+
+    VkFence[] createFences(uint count, VkFenceCreateFlags flags = 0) {
+        VkFence[] ret;
+        ret.length = count;
+        foreach (i; 0 .. count) {
+            ret[i] = createFence(flags);
+        }
+        return ret;
+    }
+
+    VkFence createFence(VkFenceCreateFlags flags = 0) {
+        VkFence ret;
+        VkFenceCreateInfo info = { flags : flags, };
+        auto errors = vkCreateFence(this.logicalDevice, &info, null, &ret);
+        enforce(!errors);
+        return ret;
     }
         
     /// Create the given number of semaphores using the Renderer's logical
@@ -588,12 +610,17 @@ struct Renderer {
     VkSemaphore[] createSemaphores(uint count) {
         VkSemaphore[] ret;
         ret.length = count;
-
         foreach (i; 0 .. count) {
-            VkSemaphoreCreateInfo info;
-            auto errors = vkCreateSemaphore(this.logicalDevice, &info, null, &ret[i]);
-            enforce(!errors);
+            ret[i] = createSemaphore();
         }
+        return ret;
+    }
+
+    VkSemaphore createSemaphore() { 
+        VkSemaphore ret;
+        VkSemaphoreCreateInfo info;
+        auto errors = vkCreateSemaphore(this.logicalDevice, &info, null, &ret);
+        enforce(!errors);
         return ret;
     }
 
@@ -886,7 +913,7 @@ struct Renderer {
 
         QueueFamilies ret;
 
-        debug log("Queue families: ", queueFamilies);
+        // debug log("Queue families: ", queueFamilies);
 
         foreach (i, family; queueFamilies) {
             auto supportsGraphics = family.queueFlags & VK_QUEUE_GRAPHICS_BIT;
@@ -916,7 +943,7 @@ struct Renderer {
             }
 
             if (ret.isComplete) {
-                debug log("Using queues ", ret);
+                //debug log("Using queues ", ret);
                 return ret;
             }
         }
@@ -1140,12 +1167,13 @@ struct Renderer {
         return ret;
     }
 
+    /// Acquire the imageIndex for the next frame.
     uint acquireNextImageIndex(uint previousFrameImageIndex) {
         uint imageIndex;
         auto errors = vkAcquireNextImageKHR(this.logicalDevice, 
                                             this.swapchain.swapchain, 
                                             ulong.max, // timeout (ns)
-                                            this.swapchain.imageAvailableSemaphores[previousFrameImageIndex],
+                                            this.swapchain.imageAvailableSemaphore,
                                             VK_NULL_HANDLE, // fence
                                             &imageIndex);
         enforce(!errors);
@@ -1244,9 +1272,11 @@ struct Renderer {
         VkBuffer[1]     buffers = [buffer.buffer];
         VkDeviceSize[1] offsets = [0];
 
-        vkCmdBeginRenderPass  (this.swapchain.commandBuffers[imageIndex], &info, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline     (this.swapchain.commandBuffers[imageIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, this.swapchain.pipeline);
-        vkCmdBindVertexBuffers(this.swapchain.commandBuffers[imageIndex], 0, 1, buffers.ptr, offsets.ptr);
+        auto cb = this.swapchain.commandBuffers[imageIndex];
+
+        vkCmdBeginRenderPass  (cb, &info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline     (cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this.swapchain.pipeline);
+        vkCmdBindVertexBuffers(cb, 0, 1, buffers.ptr, offsets.ptr);
 
         vkCmdBindDescriptorSets(
             this.swapchain.commandBuffers[imageIndex], 
@@ -1274,13 +1304,26 @@ struct Renderer {
         vkCmdUpdateBuffer(this.swapchain.commandBuffers[imageIndex], buffer.buffer, 0, dataSize, data.ptr);
     }
 
+    /// Reset the command buffer for this frame, then move it to the Recording
+    /// state.
     void beginCommandsForFrame(uint imageIndex) {
-        VkCommandBufferBeginInfo beginInfo;
-        vkBeginCommandBuffer(this.swapchain.commandBuffers[imageIndex], &beginInfo);
+        auto cb = this.swapchain.commandBuffers[imageIndex];
+
+        vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence, false, ulong.max);
+        vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence);
+
+        vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);
+        VkCommandBufferBeginInfo beginInfo = {
+            flags : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        vkBeginCommandBuffer(cb, &beginInfo);
     }
 
+    /// Indicate that we are finished recording rendering commands for this
+    /// frame, and the command buffer may be submitted.
     void endCommandsForFrame(uint imageIndex) {
-        auto errors = vkEndCommandBuffer(this.swapchain.commandBuffers[imageIndex]);
+        auto cb = this.swapchain.commandBuffers[imageIndex];
+        auto errors = vkEndCommandBuffer(cb);
         enforce(!errors);
     }
 
@@ -1299,7 +1342,7 @@ struct Renderer {
             );
 
             if (matchesFilter && allPropertiesAvailable) {
-                debug log("Using memory type ", i);
+                //debug log("Using memory type ", i);
                 return i;
             }
         }
@@ -1337,14 +1380,14 @@ struct Renderer {
     DepthResources createDepthResources() {
         VkExtent2D extent = this.getSurfaceExtent();
 
-        const format = VK_FORMAT_D32_SFLOAT;
+        auto imageFormat = VK_FORMAT_D32_SFLOAT;
 
         VkImageCreateInfo createInfo = {
             imageType     : VK_IMAGE_TYPE_2D,
             extent        : { width: extent.width, height: extent.height, depth: 1},
             mipLevels     : 1,
             arrayLayers   : 1,
-            format        : format,
+            format        : imageFormat,
             tiling        : VK_IMAGE_TILING_OPTIMAL,
             initialLayout : VK_IMAGE_LAYOUT_UNDEFINED,
             usage         : VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1357,7 +1400,7 @@ struct Renderer {
         enforce(!createErrors);
 
         VkMemoryRequirements memoryRequirements;
-        vkGetImageMemoryRequirements(logicalDevice, image, &memoryRequirements);
+        vkGetImageMemoryRequirements(this.logicalDevice, image, &memoryRequirements);
 
         VkMemoryAllocateInfo allocInfo = {
             allocationSize  : memoryRequirements.size,
@@ -1367,7 +1410,7 @@ struct Renderer {
 
         VkDeviceMemory memory;
         auto allocErrors = 
-            vkAllocateMemory(logicalDevice, &allocInfo, null, &memory);
+            vkAllocateMemory(this.logicalDevice, &allocInfo, null, &memory);
         enforce(!allocErrors);
 
         vkBindImageMemory(logicalDevice, image, memory, 0);
@@ -1375,7 +1418,7 @@ struct Renderer {
         DepthResources ret = {
             image     : image,
             memory    : memory,
-            imageView : createImageView(logicalDevice, image, format, 
+            imageView : createImageView(this.logicalDevice, image, imageFormat, 
                                         VK_IMAGE_ASPECT_DEPTH_BIT),
         };
 
@@ -1392,7 +1435,7 @@ struct Renderer {
         layouts.length = count;
         layouts[]      = descriptorSetLayout;
 
-        debug log(layouts);
+        //debug log(layouts);
 
         VkDescriptorSetAllocateInfo allocInfo = {
             descriptorPool     : descriptorPool,
@@ -1448,15 +1491,17 @@ struct Renderer {
     /// Clean up all Vulkan state, ready to shut down the application. Or recreate
     /// the entire Vulkan context. Or whatever.
     void cleanup() {
-        cleanupSwapchainWithDependents();
-        vkDestroyCommandPool(logicalDevice, commandPool, null);
-        vkDestroyPipelineLayout(logicalDevice, pipelineLayout, null);
-        vkDestroyDescriptorPool(logicalDevice, this.swapchain.descriptorPool, null);
-        vkDestroyDescriptorSetLayout(logicalDevice, descriptorSetLayout, null);
-        vkDestroyDevice(logicalDevice, null);
-        vkDestroyDebugUtilsMessengerEXT(instance, this.debugMessenger, null);
-        vkDestroySurfaceKHR(instance, surface, null);
-        vkDestroyInstance(instance, null);
+        // Device-level
+        cleanupSwapchainWithDependents ();
+        vkDestroyCommandPool           (this.logicalDevice, this.commandPool, null);
+        vkDestroyPipelineLayout        (this.logicalDevice, this.pipelineLayout, null);
+        vkDestroyDescriptorPool        (this.logicalDevice, this.swapchain.descriptorPool, null);
+        vkDestroyDescriptorSetLayout   (this.logicalDevice, this.descriptorSetLayout, null);
+        vkDestroyDevice                (this.logicalDevice, null);
+        // Instance-level
+        vkDestroyDebugUtilsMessengerEXT(this.instance, this.debugMessenger, null);
+        vkDestroySurfaceKHR            (this.instance, this.surface, null);
+        vkDestroyInstance              (this.instance, null);
     }
 
 } // end struct Renderer

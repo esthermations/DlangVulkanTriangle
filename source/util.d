@@ -152,4 +152,21 @@ unittest {
     assert(approxEqual(proj, expected));
 }
 
+import std.string : toStringz;
 
+enum AnsiColour {
+    RED     = "\033[1;31m",
+    GREEN   = "\033[1;32m",
+    YELLOW  = "\033[1;33m",
+    BLUE    = "\033[1;34m",
+    MAGENTA = "\033[1;35m",
+    CYAN    = "\033[1;36m",
+    DEFAULT = "\033[39;49m",
+};
+
+string yellow (string s) { return AnsiColour.YELLOW  ~ s ~ AnsiColour.DEFAULT; }
+string green  (string s) { return AnsiColour.GREEN   ~ s ~ AnsiColour.DEFAULT; }
+string red    (string s) { return AnsiColour.RED     ~ s ~ AnsiColour.DEFAULT; }
+string cyan   (string s) { return AnsiColour.CYAN    ~ s ~ AnsiColour.DEFAULT; }
+string blue   (string s) { return AnsiColour.BLUE    ~ s ~ AnsiColour.DEFAULT; }
+string magenta(string s) { return AnsiColour.MAGENTA ~ s ~ AnsiColour.DEFAULT; }
