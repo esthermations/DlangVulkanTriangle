@@ -17,15 +17,18 @@ import game;
 PFN_vkCreateDebugUtilsMessengerEXT  vkCreateDebugUtilsMessengerEXT;
 PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
 
-// Predefined types for Uniform and Vertex buffers
+// Buffer types
 
 alias VertexBuffer  = Renderer.Buffer!Vertex;
 alias UniformBuffer = Renderer.Buffer!Uniforms;
 
 struct Uniforms {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
+    // Ensure this is equal to the one defined in shader.vert
+    enum MAX_MODEL_UNIFORMS = 1000;
+
+    mat4[MAX_MODEL_UNIFORMS] models;
+    mat4                     view;
+    mat4                     projection;
 }
 
 struct Vertex {
@@ -133,6 +136,7 @@ struct Renderer {
             globals.windowWasResized) 
         {
             debug log("Recreating swapchain.");
+            globals.windowWasResized = false;
             this.swapchain = recreateSwapchainWithDependents();
         }
     } // end render()
@@ -469,51 +473,6 @@ struct Renderer {
         return ret;
     }
 
-    /// Clean up a swapchain and all its dependent items. There are a lot of them.
-    /// The commandPool and pipelineLayout are NOT destroyed.
-    void cleanupSwapchainWithDependents() {
-        vkDeviceWaitIdle(logicalDevice);
-
-        foreach (framebuffer; this.swapchain.framebuffers) {
-            vkDestroyFramebuffer(this.logicalDevice, framebuffer, null);
-        }
-
-        vkFreeCommandBuffers(this.logicalDevice, this.commandPool, this.swapchain.numImages(), this.swapchain.commandBuffers.ptr);
-
-        //foreach (s; this.swapchain.imageAvailableSemaphores) {
-        //    vkDestroySemaphore(this.logicalDevice, s, null);
-        //}
-
-        //foreach (s; this.swapchain.renderFinishedSemaphores) {
-        //    vkDestroySemaphore(this.logicalDevice, s, null);
-        //}
-        vkDestroySemaphore(this.logicalDevice, this.swapchain.imageAvailableSemaphore, null);
-        vkDestroySemaphore(this.logicalDevice, this.swapchain.renderFinishedSemaphore, null);
-        vkDestroyFence    (this.logicalDevice, this.swapchain.commandBufferReadyFence, null);
-
-        vkDestroyPipeline(this.logicalDevice, this.swapchain.pipeline, null);
-
-        vkDestroyRenderPass(
-            this.logicalDevice, this.swapchain.renderPass, null);
-
-        vkDestroyDescriptorPool(
-            this.logicalDevice, this.swapchain.descriptorPool, null);
-
-        foreach (view; this.swapchain.imageViews) {
-            vkDestroyImageView(this.logicalDevice, view, null);
-        }
-
-        vkDestroyImageView(
-            this.logicalDevice, this.swapchain.depthResources.imageView, null);
-        vkDestroyImage(
-            this.logicalDevice, this.swapchain.depthResources.image, null);
-        vkFreeMemory(
-            this.logicalDevice, this.swapchain.depthResources.memory, null);
-
-        vkDestroySwapchainKHR(
-            this.logicalDevice, this.swapchain.swapchain, null);
-    }
-
     struct SwapchainWithDependents {
         VkSwapchainKHR    swapchain;
         VkRenderPass      renderPass;
@@ -522,11 +481,11 @@ struct Renderer {
         VkPipeline        pipeline;
         
         // Per-image (per-frame) data
-        VkImageView     []imageViews;
-        VkFramebuffer   []framebuffers;
-        VkDescriptorSet []descriptorSets;
-        UniformBuffer   []uniformBuffers;
-        VkCommandBuffer []commandBuffers;
+        VkImageView             []imageViews;
+        VkFramebuffer           []framebuffers;
+        VkDescriptorSet         []descriptorSets;
+        UniformBuffer           []uniformBuffers;
+        VkCommandBuffer         []commandBuffers;
         /// Signalled when the commandBuffer for this image can be submitted
         VkSemaphore     imageAvailableSemaphore;
         /// Signalled when this frame has been submitted to be presented
@@ -559,7 +518,7 @@ struct Renderer {
         vkDeviceWaitIdle(logicalDevice);
 
         const colourFormat = getSurfaceFormat();
-        const depthFormat  = VK_FORMAT_D32_SFLOAT;
+        const depthFormat  = getDepthFormat();
         const extent = getSurfaceExtent();
 
         ret.swapchain      = this.createSwapchain();
@@ -581,6 +540,57 @@ struct Renderer {
 
         return ret;
     }
+
+    /// Clean up a swapchain and all its dependent items. There are a lot of them.
+    /// The commandPool and pipelineLayout are NOT destroyed.
+    void cleanupSwapchainWithDependents() {
+        vkDeviceWaitIdle(logicalDevice);
+
+        foreach (framebuffer; this.swapchain.framebuffers) {
+            vkDestroyFramebuffer(this.logicalDevice, framebuffer, null);
+        }
+
+        vkFreeCommandBuffers(this.logicalDevice, this.commandPool, this.swapchain.numImages(), this.swapchain.commandBuffers.ptr);
+
+        vkDestroySemaphore(this.logicalDevice, this.swapchain.imageAvailableSemaphore, null);
+        vkDestroySemaphore(this.logicalDevice, this.swapchain.renderFinishedSemaphore, null);
+        vkDestroyFence    (this.logicalDevice, this.swapchain.commandBufferReadyFence, null);
+
+        vkDestroyPipeline(this.logicalDevice, this.swapchain.pipeline, null);
+
+        vkDestroyRenderPass(
+            this.logicalDevice, this.swapchain.renderPass, null);
+
+        foreach (view; this.swapchain.imageViews) {
+            vkDestroyImageView(this.logicalDevice, view, null);
+        }
+
+        vkDestroyImageView(
+            this.logicalDevice, this.swapchain.depthResources.imageView, null);
+        vkDestroyImage(
+            this.logicalDevice, this.swapchain.depthResources.image, null);
+        vkFreeMemory(
+            this.logicalDevice, this.swapchain.depthResources.memory, null);
+
+        foreach (buf; this.swapchain.uniformBuffers) {
+            vkDestroyBuffer(this.logicalDevice, buf.buffer, null);
+            vkFreeMemory   (this.logicalDevice, buf.memory, null);
+        }
+
+        vkFreeDescriptorSets(
+            this.logicalDevice, 
+            this.swapchain.descriptorPool, 
+            cast(uint) this.swapchain.descriptorSets.length, 
+            this.swapchain.descriptorSets.ptr
+        );
+
+        vkDestroyDescriptorPool(this.logicalDevice, this.swapchain.descriptorPool, null);
+
+        vkDestroySwapchainKHR(
+            this.logicalDevice, this.swapchain.swapchain, null);
+    }
+
+
 
     SwapchainWithDependents recreateSwapchainWithDependents() {
         vkDeviceWaitIdle(this.logicalDevice);
@@ -817,7 +827,7 @@ struct Renderer {
             flags          : 0,
             format         : colourFormat,
             samples        : VK_SAMPLE_COUNT_1_BIT,
-            loadOp         : VK_ATTACHMENT_LOAD_OP_LOAD,
+            loadOp         : VK_ATTACHMENT_LOAD_OP_CLEAR,
             storeOp        : VK_ATTACHMENT_STORE_OP_STORE,
             stencilLoadOp  : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             stencilStoreOp : VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -1262,21 +1272,25 @@ struct Renderer {
         vkUnmapMemory(this.logicalDevice, buffer.memory);
     }
 
-    /// Perform a render pass (vkCmdBeginRenderPass) using the contents of this
-    /// buffer. All commands are associated with the frame identified by
-    /// imageIndex.
-    void issueRenderCommands(DataT)(uint imageIndex, Buffer!DataT buffer) {
+    /// Issue a command to render the given number of instances of the given
+    /// vertex buffer.
+    void issueRenderCommands(DataT)(uint         imageIndex, 
+                                    Buffer!DataT buffer, 
+                                    uint         numInstances) 
+    {
         VkBuffer[1]     buffers = [buffer.buffer];
         VkDeviceSize[1] offsets = [0];
 
         auto cb = this.swapchain.commandBuffers[imageIndex];
         vkCmdBindVertexBuffers(cb, 0, 1, buffers.ptr, offsets.ptr);
-        vkCmdDraw             (cb, buffer.elementCount(), 1, 0, 0);
+        vkCmdDraw             (cb, buffer.elementCount(), numInstances, 0, 0);
     }
 
-    void issueUpdateCommand(DataT)(uint imageIndex, 
-                                   Buffer!DataT buffer, 
-                                   DataT[] data) 
+    /// Issue a command to update this buffer. NOTE: This cannot be performed
+    /// during a render pass, according to the Vulkan spec
+    void issueUpdateCommand(DataT)(uint         imageIndex, 
+                                   Buffer!DataT buffer,
+                                   DataT[]      data) 
          in (data.length != 0)
          in (data.length * DataT.sizeof <= buffer.size)
          in (buffer.size < 65536) // vkspec pp. 832
@@ -1287,7 +1301,7 @@ struct Renderer {
 
     /// Reset the command buffer for this frame, then move it to the Recording
     /// state.
-    void beginCommandsForFrame(uint imageIndex) {
+    void beginCommandsForFrame(uint imageIndex, Uniforms uniformData) {
         auto cb = this.swapchain.commandBuffers[imageIndex];
 
         // Wait for the command buffer to be ready (signalled by vkQueueSubmit)
@@ -1296,13 +1310,16 @@ struct Renderer {
         vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence);
         // Reset the command buffer, putting it in the Initial state
         vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);
-
         // Begin the command buffer, putting it in the Recording state
         VkCommandBufferBeginInfo beginInfo = {
             flags : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
 
         vkBeginCommandBuffer(cb, &beginInfo);
+
+        // Send updated uniform data
+        Uniforms[1] ubo = [uniformData];
+        issueUpdateCommand(imageIndex, this.swapchain.uniformBuffers[imageIndex], ubo);
 
         // Start a render pass
         VkRenderPassBeginInfo info = {
@@ -1368,6 +1385,7 @@ struct Renderer {
             poolSizeCount : 1,
             pPoolSizes    : &poolSize,
             maxSets       : numDescriptors,
+            flags         : VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
         };
 
         VkDescriptorPool ret;
@@ -1385,10 +1403,13 @@ struct Renderer {
         VkDeviceMemory memory;
     }
 
+    VkFormat getDepthFormat() {
+        return VK_FORMAT_D16_UNORM;
+    }
+
     DepthResources createDepthResources() {
         VkExtent2D extent = this.getSurfaceExtent();
-
-        auto imageFormat = VK_FORMAT_D32_SFLOAT;
+        auto imageFormat = this.getDepthFormat();
 
         VkImageCreateInfo createInfo = {
             imageType     : VK_IMAGE_TYPE_2D,
@@ -1501,9 +1522,9 @@ struct Renderer {
     void cleanup() {
         // Device-level
         cleanupSwapchainWithDependents ();
+
         vkDestroyCommandPool           (this.logicalDevice, this.commandPool, null);
         vkDestroyPipelineLayout        (this.logicalDevice, this.pipelineLayout, null);
-        vkDestroyDescriptorPool        (this.logicalDevice, this.swapchain.descriptorPool, null);
         vkDestroyDescriptorSetLayout   (this.logicalDevice, this.descriptorSetLayout, null);
         vkDestroyDevice                (this.logicalDevice, null);
         // Instance-level

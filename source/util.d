@@ -114,14 +114,10 @@ unittest {
 
 /// Don't use this one. Use the one that takes fovDegrees, below. This is
 /// correct but not really user-friendly.
-mat4 perspective(float top, float bottom, float left, float right, float near, float far) pure {
+mat4 perspective(float top, float bottom, float left, float right, float near, float far) pure @nogc nothrow {
     immutable dx = right - left;    
     immutable dy = top - bottom;
     immutable dz = far - near;
-
-    // NOTE: [1][1] is reflected here (* by -1) so that we can use Y-up in our
-    // game logic, though Vulkan renders assuming Y-down. We just flip it in the
-    // projection.
 
     mat4 ret = mat4(
         2.0 * (near/dx), 0,               (right+left)/dx, 0,
@@ -132,12 +128,17 @@ mat4 perspective(float top, float bottom, float left, float right, float near, f
     return ret;
 }
 
+/// Converts degrees to radians.
+float toRadians(float degrees) pure @nogc nothrow {
+    import std.math : PI;
+    return (PI / 180.0) * degrees;
+}
+
 /// Calculate a projection matrix using the given fov, aspect ratio, and near
 /// and far planes.
-mat4 perspective(float fovDegrees, float aspectRatio, float near, float far) pure {
-    import gl3n.math : radians;
+mat4 perspective(float fovDegrees, float aspectRatio, float near, float far) pure @nogc nothrow {
     import std.math  : tan;
-    immutable top    = (near * tan(0.5 * radians(fovDegrees)));
+    immutable top    = (near * tan(0.5 * toRadians(fovDegrees)));
     immutable bottom = -top;
     immutable right  = top * aspectRatio;
     immutable left   = -right;

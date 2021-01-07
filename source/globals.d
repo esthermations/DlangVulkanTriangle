@@ -6,28 +6,32 @@ import gl3n.linalg;
 
 import core.time;
 
-/// Global state pertaining to the program itself, not the game state.
-ulong currentFrame; /// Latest frame? This might be named better.
+/**
+
+    This module contains global state pertaining to the program itself, not the
+    game state. It should be imported with a 'static import' command, so all its
+    members must be prefixed with 'globals.' to be accessed.
+
+**/
+extern (C) nothrow @nogc:
 
 bool  windowWasResized = false;
 uint  windowWidth      = 1280;
 uint  windowHeight     = 720;
 
 /// Returns the aspect ratio of the current window
-float aspectRatio() {
-    return cast(float) windowWidth / cast(float) windowHeight;
+float aspectRatio() @nogc nothrow {
+    return cast(float) globals.windowWidth / cast(float) globals.windowHeight;
 }
 
-float verticalFieldOfView = 10.0;
+float verticalFieldOfView = 20.0;
 float nearPlane = 1.0;
 float farPlane  = 10.0;
-
-MonoTime programT0;
 
 GLFWwindow *window;
 
 VkClearValue[] clearValues = [
-    { color        : { float32 : [0.0, 0.0, 0.0, 1.0] } },
+    { color        : { float32 : [0.0, 0.1, 0.2, 1.0] } },
     { depthStencil : { depth: 1.0, stencil: 0 } },
 ];
 

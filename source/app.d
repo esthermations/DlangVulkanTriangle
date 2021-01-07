@@ -13,7 +13,6 @@ import renderer;
 void main() {
 
     import core.time;
-    globals.programT0 = MonoTime.currTime();
 
     Frame initialFrame;
 
@@ -38,8 +37,8 @@ void main() {
         f.acceleration[player]       = vec3(0);
         f.controlledByPlayer[player] = true;
 
-        f.position    [camera]      = vec3(0.0, 5.up, 5.backwards);
-        f.lookAtTarget[camera]      = f.position[player];
+        f.position          [camera] = vec3(0.0, 5.up, 5.backwards);
+        f.lookAtTargetEntity[camera] = player;
     }
 
     // Init GLFW
@@ -126,10 +125,17 @@ void main() {
     renderer.setBufferData(barrelVertexBuffer, vertices);
     initialFrame.vertexBuffer[player]      = barrelVertexBuffer;
 
-    foreach (i; 0 .. 10) {
+    foreach (i; 0 .. 990) {
         auto e = initialFrame.createEntity();
+
+        import std.random : uniform;
+
+        float x = uniform(-10.0, 10.0);
+        float y = uniform(-10.0, 10.0);
+        float z = uniform(-10.0, 10.0);
+
         initialFrame.vertexBuffer[e] = barrelVertexBuffer;
-        initialFrame.position    [e] = vec3(i * 0.3, 0, 0);
+        initialFrame.position    [e] = vec3(x, y, z);
         initialFrame.scale       [e] = 5.0 + (i % 5);
     }
 

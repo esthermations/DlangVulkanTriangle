@@ -1,8 +1,9 @@
 module game;
 
-import std.typecons : Nullable;
 import std.algorithm;
-import std.exception : enforce;
+import std.typecons    : Nullable;
+import std.exception   : enforce;
+import std.parallelism : parallel;
 
 import glfw3.api;
 import gl3n.linalg; 
@@ -39,7 +40,7 @@ struct Frame {
     Nullable!vec3         []position;
     Nullable!vec3         []velocity;
     Nullable!vec3         []acceleration;
-    Nullable!vec3         []lookAtTarget;
+    Nullable!uint         []lookAtTargetEntity;
     Nullable!bool         []controlledByPlayer;
     Nullable!float        []scale;
     Nullable!mat4         []modelMatrix;
@@ -55,7 +56,7 @@ struct Frame {
         assert(position.length == position.length);
         assert(position.length == velocity.length);
         assert(position.length == acceleration.length);
-        assert(position.length == lookAtTarget.length);
+        assert(position.length == lookAtTargetEntity.length);
         assert(position.length == controlledByPlayer.length);
         assert(position.length == scale.length);
         assert(position.length == modelMatrix.length);
@@ -79,7 +80,7 @@ struct Frame {
         this.acceleration.length       = newLength;
         this.scale.length              = newLength;
         this.viewMatrix.length         = newLength;
-        this.lookAtTarget.length       = newLength;
+        this.lookAtTargetEntity.length = newLength;
         this.controlledByPlayer.length = newLength;
         this.modelMatrix.length        = newLength;
         this.vertexBuffer.length       = newLength;
@@ -102,7 +103,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         position           : previousFrame.position,
         velocity           : previousFrame.velocity,
         acceleration       : previousFrame.acceleration,
-        lookAtTarget       : previousFrame.lookAtTarget,
+        lookAtTargetEntity : previousFrame.lookAtTargetEntity,
         controlledByPlayer : previousFrame.controlledByPlayer,
         scale              : previousFrame.scale,
         modelMatrix        : previousFrame.modelMatrix,
@@ -114,7 +115,15 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     thisFrame.imageIndex = renderer.acquireNextImageIndex(previousFrame.imageIndex);
 
     glfwSetWindowUserPointer(globals.window, &thisFrame);
+
+    // Poll GLFW events. This may result in the frame's state being modified
+    // through the user pointer we just set, by the functions in
+    // glfw_callbacks.d.
     glfwPollEvents();
+
+    /*
+        Run systems
+    */
 
     // Update velocities
 
@@ -122,7 +131,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         auto velEnts = entitiesWithComponent(thisFrame.velocity);
         auto accEnts = entitiesWithComponent(thisFrame.acceleration);
         auto ents    = setIntersection(velEnts, accEnts);
-        debug log(ents);
+        debug(ecs) log(ents);
         foreach (e; ents) {
             thisFrame.velocity[e] += thisFrame.acceleration[e];
         }
@@ -134,8 +143,8 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         auto posEnts = entitiesWithComponent(thisFrame.position);
         auto velEnts = entitiesWithComponent(thisFrame.velocity);
         auto ents    = setIntersection(posEnts, velEnts);
-        debug log(ents);
-        foreach (e; ents) {
+        debug(ecs) log(ents);
+        foreach (e; ents.parallel) {
             thisFrame.position[e] += thisFrame.velocity[e];
         }
     }
@@ -146,8 +155,9 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         auto posEnts = entitiesWithComponent(thisFrame.position);
         auto sclEnts = entitiesWithComponent(thisFrame.scale);
         auto ents    = setIntersection(posEnts, sclEnts);
-        debug log(ents);
-        foreach (e; ents) {
+        debug(ecs) log(ents);
+
+        foreach (e; ents.parallel) {
             auto scale    = thisFrame.scale[e].get;
             auto position = thisFrame.position[e].get;
             thisFrame.modelMatrix[e] = mat4.identity.scale(scale, scale, scale)
@@ -159,46 +169,63 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     // Update camera view matrices
 
     void updateViewMatrices() {
-        auto lookAtEnts = entitiesWithComponent(thisFrame.lookAtTarget);
+        auto lookAtEnts = entitiesWithComponent(thisFrame.lookAtTargetEntity);
         auto posEnts    = entitiesWithComponent(thisFrame.position);
         auto cameras    = setIntersection(lookAtEnts, posEnts);
-        debug log(cameras);
+        debug(ecs) log(cameras);
         foreach (e; cameras) {
-            vec3 eyePos = thisFrame.position[e].get;
-            vec3 targetPos = thisFrame.lookAtTarget[e].get;
+            vec3 eyePos = thisFrame.position[e].get();
+            uint targetEntity = thisFrame.lookAtTargetEntity[e].get();
+            vec3 targetPos    = thisFrame.position[targetEntity].get();
             thisFrame.viewMatrix[e] = lookAt(eyePos, targetPos, vec3(0, 1.up, 0));
         }
     }
 
-    // Render vertex buffers
+    // Prepare updated uniform data
 
-    void renderVertexBuffers() {
-        auto modelEnts = entitiesWithComponent(thisFrame.modelMatrix);
-        auto vbufEnts  = entitiesWithComponent(thisFrame.vertexBuffer);
-        auto renderableEntities = setIntersection(modelEnts, vbufEnts);
-        debug log(renderableEntities);
-
+    Uniforms updateUniforms() {
         // NOTE: We're explicitly assuming here that only one entity (the
         // camera) will have a view matrix. Or at least, if there are multiple
         // view matrices, we're always using the first one.
         auto viewMatrixEnts = entitiesWithComponent(thisFrame.viewMatrix);
         auto viewMatrix = thisFrame.viewMatrix[viewMatrixEnts.front].get;
-        debug log("Camera entity is: ", viewMatrixEnts.front);
+        debug(ecs) log("Camera entity is: ", viewMatrixEnts.front);
 
-        renderer.beginCommandsForFrame(thisFrame.imageIndex);
+        Uniforms uniformData = {
+            projection : thisFrame.projection,
+            view       : viewMatrix,
+            // Models is not set yet
+        };
 
-        foreach (e; renderableEntities) {
-            Uniforms uniformData = {
-                projection : thisFrame.projection,
-                view       : viewMatrix,
-                model      : thisFrame.modelMatrix[e].get,
-            };
+        auto modelMatrixEnts = entitiesWithComponent(thisFrame.modelMatrix);
 
-            renderer.setUniformDataForFrame(thisFrame.imageIndex, 
-                                            uniformData);
+        uint i = 0;
+        foreach (e; modelMatrixEnts) {
+            uniformData.models[i++] = thisFrame.modelMatrix[e];
+        }
 
-            renderer.issueRenderCommands(thisFrame.imageIndex,
-                                         thisFrame.vertexBuffer[e].get);
+        return uniformData;
+    }
+
+    // Render vertex buffers
+
+    void renderEntities(Uniforms ubo) {
+        auto modelEnts = entitiesWithComponent(thisFrame.modelMatrix);
+        auto vbufEnts  = entitiesWithComponent(thisFrame.vertexBuffer);
+        auto renderableEntities = setIntersection(modelEnts, vbufEnts);
+        debug(ecs) log(renderableEntities);
+
+        renderer.beginCommandsForFrame(thisFrame.imageIndex, ubo);
+
+        uint[VertexBuffer] counts;
+
+        foreach (e; vbufEnts) {
+            auto vbuf = thisFrame.vertexBuffer[e].get();
+            counts[vbuf]++;
+        }
+
+        foreach (vbuf, count; counts) {
+            renderer.issueRenderCommands(thisFrame.imageIndex, vbuf, count);
         }
 
         renderer.endCommandsForFrame(thisFrame.imageIndex);
@@ -230,7 +257,8 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     updateModelMatrices();
     updateViewMatrices();
     updatePlayerAcceleration();
-    renderVertexBuffers();
+    Uniforms ubo = updateUniforms();
+    renderEntities(ubo);
 
     if (thisFrame.actionRequested[GameAction.QUIT_GAME]) {
         glfwSetWindowShouldClose(globals.window, GLFW_TRUE);
