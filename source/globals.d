@@ -19,6 +19,12 @@ bool  windowWasResized = false;
 uint  windowWidth      = 1280;
 uint  windowHeight     = 720;
 
+/// Set via querySwapchainSupport. Determines how many Frame structures we
+/// allocate
+uint  numSwapchainImages = 0;
+
+enum MAX_ENTITIES = 1000;
+
 /// Returns the aspect ratio of the current window
 float aspectRatio() @nogc nothrow {
     return cast(float) globals.windowWidth / cast(float) globals.windowHeight;

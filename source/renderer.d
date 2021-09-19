@@ -99,24 +99,26 @@ struct Renderer {
 
         VkSubmitInfo submitInfo = {
             waitSemaphoreCount   : 1,
-            pWaitSemaphores      : &this.swapchain.imageAvailableSemaphore,
+            // This semaphore should already be signalled because
+            // acquireImageIndex waits for it.
+            pWaitSemaphores      : &this.swapchain.imageAvailableSemaphores[frame.imageIndex],
             pWaitDstStageMask    : &waitStages,
             signalSemaphoreCount : 1,
-            pSignalSemaphores    : &this.swapchain.renderFinishedSemaphore,
+            pSignalSemaphores    : &this.swapchain.renderFinishedSemaphores[frame.imageIndex],
             commandBufferCount   : 1,
             pCommandBuffers      : &this.swapchain.commandBuffers[frame.imageIndex],
         };
 
         {
-            auto errors = vkQueueSubmit(this.graphicsQueue, 1, &submitInfo, this.swapchain.commandBufferReadyFence);
+            auto errors = vkQueueSubmit(this.graphicsQueue, 1, &submitInfo, this.swapchain.commandBufferReadyFences[frame.imageIndex]);
             enforce(!errors);
         }
 
         VkPresentInfoKHR presentInfo = {
             waitSemaphoreCount : 1,
-            pWaitSemaphores    : &this.swapchain.renderFinishedSemaphore,
+            pWaitSemaphores    : &this.swapchain.renderFinishedSemaphores[frame.imageIndex],
             swapchainCount     : 1,
-            pSwapchains        : &this.swapchain.swapchain, 
+            pSwapchains        : &this.swapchain.swapchain,
             pImageIndices      : &frame.imageIndex,
             pResults           : null,
         };
@@ -131,9 +133,9 @@ struct Renderer {
             default: break;
         }
 
-        if (queuePresentResult == VK_ERROR_OUT_OF_DATE_KHR || 
-            queuePresentResult == VK_SUBOPTIMAL_KHR || 
-            globals.windowWasResized) 
+        if (queuePresentResult == VK_ERROR_OUT_OF_DATE_KHR ||
+            queuePresentResult == VK_SUBOPTIMAL_KHR ||
+            globals.windowWasResized)
         {
             debug log("Recreating swapchain.");
             globals.windowWasResized = false;
@@ -169,10 +171,10 @@ struct Renderer {
     }
 
     /// Initialise the renderer state, ready to render buffers!
-    void initialise(VkApplicationInfo appInfo, 
+    void initialise(VkApplicationInfo appInfo,
                     const(char)*[] requiredLayers,
                     const(char)*[] requiredInstanceExtensions,
-                    const(char)*[] requiredDeviceExtensions) 
+                    const(char)*[] requiredDeviceExtensions)
     {
         // Load initial set of Vulkan functions
 
@@ -199,8 +201,8 @@ struct Renderer {
 
         {
             VkInstanceCreateInfo createInfo = {
-                pApplicationInfo        : &appInfo, 
-                enabledExtensionCount   : cast(uint) requiredInstanceExtensions.length, 
+                pApplicationInfo        : &appInfo,
+                enabledExtensionCount   : cast(uint) requiredInstanceExtensions.length,
                 ppEnabledExtensionNames : requiredInstanceExtensions.ptr,
                 enabledLayerCount       : cast(uint) requiredLayers.length,
                 ppEnabledLayerNames     : requiredLayers.ptr,
@@ -227,7 +229,7 @@ struct Renderer {
         }
 
         // Select physical device
-        
+
         this.physicalDevice = selectPhysicalDevice(requiredDeviceExtensions);
 
         // Create the logical device
@@ -245,11 +247,11 @@ struct Renderer {
             };
 
             VkDeviceQueueCreateInfo graphicsQueueCreateInfo = {
-                queueFamilyIndex : queueFamilies.graphics.get, 
+                queueFamilyIndex : queueFamilies.graphics.get,
                 queueCount       : 1,
                 pQueuePriorities : queuePriorities.ptr,
             };
- 
+
             VkDeviceQueueCreateInfo[] queueCreateInfos;
 
             queueCreateInfos ~= graphicsQueueCreateInfo;
@@ -262,7 +264,7 @@ struct Renderer {
             VkPhysicalDeviceFeatures deviceFeatures;
 
             VkDeviceCreateInfo createInfo = {
-                pQueueCreateInfos       : queueCreateInfos.ptr, 
+                pQueueCreateInfos       : queueCreateInfos.ptr,
                 queueCreateInfoCount    : cast(uint) queueCreateInfos.length,
                 pEnabledFeatures        : &deviceFeatures,
                 enabledExtensionCount   : cast(uint) requiredDeviceExtensions.length,
@@ -334,17 +336,17 @@ struct Renderer {
         }
 
         // Create swapchain
-       
+
         this.swapchain = createSwapchainWithDependents();
 
     } // end init()
 
     VkDebugUtilsMessengerEXT createDebugMessenger() {
-        extern (Windows) VkBool32 
+        extern (Windows) VkBool32
         debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT      messageSeverity,
                       VkDebugUtilsMessageTypeFlagsEXT             messageType,
-                      const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, 
-                      void*                                       pUserData) 
+                      const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+                      void*                                       pUserData)
                       nothrow @nogc
         {
             import core.stdc.stdio : printf, fflush, stdout;
@@ -355,17 +357,17 @@ struct Renderer {
         }
 
         VkDebugUtilsMessengerCreateInfoEXT createInfo = {
-            messageSeverity : VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | 
-                              VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | 
+            messageSeverity : VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                              VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-            messageType     : VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT    | 
-                              VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | 
+            messageType     : VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT    |
+                              VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                               VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-            pfnUserCallback : &debugCallback, 
+            pfnUserCallback : &debugCallback,
             pUserData       : null,
         };
 
-        vkCreateDebugUtilsMessengerEXT = cast(PFN_vkCreateDebugUtilsMessengerEXT) 
+        vkCreateDebugUtilsMessengerEXT = cast(PFN_vkCreateDebugUtilsMessengerEXT)
             vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
         vkDestroyDebugUtilsMessengerEXT = cast(PFN_vkDestroyDebugUtilsMessengerEXT)
             vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
@@ -392,7 +394,7 @@ struct Renderer {
 
         VkSwapchainCreateInfoKHR swapchainCreateInfo = {
             surface               : surface,
-            minImageCount         : imageCount, 
+            minImageCount         : imageCount,
             imageFormat           : surfaceFormat.format,
             imageColorSpace       : surfaceFormat.colorSpace,
             imageExtent           : extent,
@@ -416,9 +418,9 @@ struct Renderer {
         return swapchain;
     }
 
-    VkImageView createImageView(VkDevice           logicalDevice, 
-                                VkImage            image, 
-                                VkFormat           format, 
+    VkImageView createImageView(VkDevice           logicalDevice,
+                                VkImage            image,
+                                VkFormat           format,
                                 VkImageAspectFlags aspectMask)
     {
         VkImageViewCreateInfo createInfo = {
@@ -479,27 +481,29 @@ struct Renderer {
         VkDescriptorPool  descriptorPool;
         DepthResources    depthResources;
         VkPipeline        pipeline;
-        
+
         // Per-image (per-frame) data
         VkImageView             []imageViews;
         VkFramebuffer           []framebuffers;
         VkDescriptorSet         []descriptorSets;
         UniformBuffer           []uniformBuffers;
         VkCommandBuffer         []commandBuffers;
+
         /// Signalled when the commandBuffer for this image can be submitted
-        VkSemaphore     imageAvailableSemaphore;
+        VkSemaphore             []imageAvailableSemaphores;
         /// Signalled when this frame has been submitted to be presented
-        VkSemaphore     renderFinishedSemaphore;
+        VkSemaphore             []renderFinishedSemaphores;
         /// Signalled when the command buffer can be re-used
-        VkFence         commandBufferReadyFence;
+        VkFence                 []commandBufferReadyFences;
 
         invariant {
             assert(imageViews.length == framebuffers.length);
             assert(imageViews.length == descriptorSets.length);
             assert(imageViews.length == uniformBuffers.length);
             assert(imageViews.length == commandBuffers.length);
-            //assert(imageViews.length == imageAvailableSemaphores.length);
-            //assert(imageViews.length == renderFinishedSemaphores.length);
+            assert(imageViews.length == imageAvailableSemaphores.length);
+            assert(imageViews.length == renderFinishedSemaphores.length);
+            assert(imageViews.length == commandBufferReadyFences.length);
         }
 
         uint numImages() {
@@ -526,17 +530,17 @@ struct Renderer {
 
         uint numImages = cast(uint) ret.imageViews.length;
 
-        ret.renderPass     = this.createRenderPass(colourFormat, depthFormat);
-        ret.pipeline       = this.createGraphicsPipeline(ret.renderPass);
-        ret.depthResources = this.createDepthResources();
-        ret.framebuffers   = this.createFramebuffers(ret.imageViews, ret.depthResources.imageView, ret.renderPass);
-        ret.uniformBuffers = this.createUniformBuffers(numImages);
-        ret.descriptorPool = this.createDescriptorPool(numImages);
-        ret.descriptorSets = this.createDescriptorSets(numImages, ret.descriptorPool, this.descriptorSetLayout, ret.uniformBuffers);
-        ret.commandBuffers = this.createCommandBuffers(numImages);
-        ret.imageAvailableSemaphore = this.createSemaphore();
-        ret.renderFinishedSemaphore = this.createSemaphore();
-        ret.commandBufferReadyFence = this.createFence();
+        ret.renderPass               = this.createRenderPass      (colourFormat, depthFormat);
+        ret.pipeline                 = this.createGraphicsPipeline(ret.renderPass);
+        ret.depthResources           = this.createDepthResources  ();
+        ret.framebuffers             = this.createFramebuffers    (ret.imageViews, ret.depthResources.imageView, ret.renderPass);
+        ret.uniformBuffers           = this.createUniformBuffers  (numImages);
+        ret.descriptorPool           = this.createDescriptorPool  (numImages);
+        ret.descriptorSets           = this.createDescriptorSets  (numImages, ret.descriptorPool, this.descriptorSetLayout, ret.uniformBuffers);
+        ret.commandBuffers           = this.createCommandBuffers  (numImages);
+        ret.imageAvailableSemaphores = this.createSemaphores      (numImages);
+        ret.renderFinishedSemaphores = this.createSemaphores      (numImages);
+        ret.commandBufferReadyFences = this.createFences          (numImages);
 
         return ret;
     }
@@ -552,9 +556,11 @@ struct Renderer {
 
         vkFreeCommandBuffers(this.logicalDevice, this.commandPool, this.swapchain.numImages(), this.swapchain.commandBuffers.ptr);
 
-        vkDestroySemaphore(this.logicalDevice, this.swapchain.imageAvailableSemaphore, null);
-        vkDestroySemaphore(this.logicalDevice, this.swapchain.renderFinishedSemaphore, null);
-        vkDestroyFence    (this.logicalDevice, this.swapchain.commandBufferReadyFence, null);
+        foreach (i; 0 .. this.swapchain.numImages()) {
+            vkDestroySemaphore(this.logicalDevice, this.swapchain.imageAvailableSemaphores[i], null);
+            vkDestroySemaphore(this.logicalDevice, this.swapchain.renderFinishedSemaphores[i], null);
+            vkDestroyFence    (this.logicalDevice, this.swapchain.commandBufferReadyFences[i], null);
+        }
 
         vkDestroyPipeline(this.logicalDevice, this.swapchain.pipeline, null);
 
@@ -578,9 +584,9 @@ struct Renderer {
         }
 
         vkFreeDescriptorSets(
-            this.logicalDevice, 
-            this.swapchain.descriptorPool, 
-            cast(uint) this.swapchain.descriptorSets.length, 
+            this.logicalDevice,
+            this.swapchain.descriptorPool,
+            cast(uint) this.swapchain.descriptorSets.length,
             this.swapchain.descriptorSets.ptr
         );
 
@@ -614,7 +620,7 @@ struct Renderer {
         enforce(!errors);
         return ret;
     }
-        
+
     /// Create the given number of semaphores using the Renderer's logical
     /// device
     VkSemaphore[] createSemaphores(uint count) {
@@ -626,7 +632,7 @@ struct Renderer {
         return ret;
     }
 
-    VkSemaphore createSemaphore() { 
+    VkSemaphore createSemaphore() {
         VkSemaphore ret;
         VkSemaphoreCreateInfo info;
         auto errors = vkCreateSemaphore(this.logicalDevice, &info, null, &ret);
@@ -635,7 +641,7 @@ struct Renderer {
     }
 
     /// Create the given number of command buffers using the Renderer's current
-    /// command pool. 
+    /// command pool.
     VkCommandBuffer[] createCommandBuffers(uint count) {
         VkCommandBuffer[] ret;
         ret.length = count;
@@ -646,7 +652,7 @@ struct Renderer {
             commandBufferCount : count,
         };
 
-        auto errors = 
+        auto errors =
             vkAllocateCommandBuffers(this.logicalDevice, &allocateInfo, ret.ptr);
         enforce(!errors, "Failed to create Command Buffers");
 
@@ -654,7 +660,7 @@ struct Renderer {
     }
 
     /// Create a framebuffer for each provided vkImageView.
-    VkFramebuffer[] createFramebuffers(VkImageView[] imageViews, 
+    VkFramebuffer[] createFramebuffers(VkImageView[] imageViews,
                                        VkImageView   depthImageView,
                                        VkRenderPass  renderPass)
     {
@@ -675,7 +681,7 @@ struct Renderer {
                 layers          : 1,
             };
 
-            auto errors = 
+            auto errors =
                 vkCreateFramebuffer(this.logicalDevice, &createInfo, null, &ret[i]);
             enforce(!errors, "Failed to create a framebuffer.");
         }
@@ -692,7 +698,7 @@ struct Renderer {
     /// hardcoded properties about our pipeline in this function -- it's not nearly
     /// as agnostic as it may appear.
     VkPipeline createGraphicsPipeline(VkRenderPass renderPass) {
-        VkShaderModule vertModule = createShaderModule(logicalDevice, "./source/vert.spv"); 
+        VkShaderModule vertModule = createShaderModule(logicalDevice, "./source/vert.spv");
         VkShaderModule fragModule = createShaderModule(logicalDevice, "./source/frag.spv");
 
         VkPipelineShaderStageCreateInfo vertStageCreateInfo = {
@@ -764,9 +770,9 @@ struct Renderer {
         };
 
         VkPipelineColorBlendAttachmentState colourBlendAttachment = {
-            colorWriteMask : VK_COLOR_COMPONENT_R_BIT | 
-                             VK_COLOR_COMPONENT_G_BIT | 
-                             VK_COLOR_COMPONENT_B_BIT | 
+            colorWriteMask : VK_COLOR_COMPONENT_R_BIT |
+                             VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT |
                              VK_COLOR_COMPONENT_A_BIT,
             blendEnable    : VK_FALSE,
         };
@@ -785,7 +791,7 @@ struct Renderer {
             stencilTestEnable     : VK_FALSE,
         };
 
-        VkPipelineShaderStageCreateInfo[2] shaderStages = 
+        VkPipelineShaderStageCreateInfo[2] shaderStages =
             [vertStageCreateInfo, fragStageCreateInfo];
 
         VkGraphicsPipelineCreateInfo createInfo = {
@@ -823,7 +829,7 @@ struct Renderer {
 
     VkRenderPass createRenderPass(VkFormat colourFormat, VkFormat depthFormat) {
 
-        VkAttachmentDescription colourAttachment = { 
+        VkAttachmentDescription colourAttachment = {
             flags          : 0,
             format         : colourFormat,
             samples        : VK_SAMPLE_COUNT_1_BIT,
@@ -877,7 +883,7 @@ struct Renderer {
                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         };
 
-        auto attachments = [colourAttachment, depthAttachment]; 
+        auto attachments = [colourAttachment, depthAttachment];
 
         VkRenderPassCreateInfo createInfo = {
             attachmentCount : cast(uint) attachments.length,
@@ -913,12 +919,12 @@ struct Renderer {
     QueueFamilies selectQueueFamilies(VkPhysicalDevice particularPhysicalDevice) {
         VkQueueFamilyProperties[] queueFamilies;
         uint queueFamilyCount;
-        vkGetPhysicalDeviceQueueFamilyProperties(particularPhysicalDevice, 
-                                                 &queueFamilyCount, 
+        vkGetPhysicalDeviceQueueFamilyProperties(particularPhysicalDevice,
+                                                 &queueFamilyCount,
                                                  null);
         queueFamilies.length = queueFamilyCount;
-        vkGetPhysicalDeviceQueueFamilyProperties(particularPhysicalDevice, 
-                                                 &queueFamilyCount, 
+        vkGetPhysicalDeviceQueueFamilyProperties(particularPhysicalDevice,
+                                                 &queueFamilyCount,
                                                  queueFamilies.ptr);
 
         QueueFamilies ret;
@@ -933,9 +939,9 @@ struct Renderer {
             }
 
             VkBool32 supportsPresent = false;
-            vkGetPhysicalDeviceSurfaceSupportKHR(particularPhysicalDevice, 
-                                                 cast(uint) i, 
-                                                 surface, 
+            vkGetPhysicalDeviceSurfaceSupportKHR(particularPhysicalDevice,
+                                                 cast(uint) i,
+                                                 surface,
                                                  &supportsPresent);
 
             // NOTE: We may want to use different queue families for graphics
@@ -944,7 +950,7 @@ struct Renderer {
                 ret.present = cast(uint) i;
             }
 
-            auto supportsTransfer = 
+            auto supportsTransfer =
                 (family.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
                 !(family.queueFlags & VK_QUEUE_GRAPHICS_BIT);
 
@@ -963,8 +969,8 @@ struct Renderer {
     }
 
     /// Is this device suitable for our purposes?
-    bool isSuitable(VkPhysicalDevice particularPhysicalDevice, 
-                    const(char)*[]   requiredDeviceExtensions) 
+    bool isSuitable(VkPhysicalDevice particularPhysicalDevice,
+                    const(char)*[]   requiredDeviceExtensions)
     {
         // Confirm device is a discrete GPU
         VkPhysicalDeviceProperties deviceProperties;
@@ -987,9 +993,9 @@ struct Renderer {
 
         VkExtensionProperties[] availableDeviceExtensions;
         availableDeviceExtensions.length = numExtensions;
-        vkEnumerateDeviceExtensionProperties(particularPhysicalDevice, 
-                                             null, 
-                                             &numExtensions, 
+        vkEnumerateDeviceExtensionProperties(particularPhysicalDevice,
+                                             null,
+                                             &numExtensions,
                                              availableDeviceExtensions.ptr);
 
 
@@ -1000,7 +1006,7 @@ struct Renderer {
         import std.string : fromStringz;
         bool[string] extensionFound;
 
-        foreach (ext; requiredDeviceExtensions) { 
+        foreach (ext; requiredDeviceExtensions) {
             extensionFound[ext.fromStringz] = false;
         }
 
@@ -1028,7 +1034,7 @@ struct Renderer {
         bool swapchainSuitable;
 
         SwapchainSupportDetails swapchainSupport = querySwapchainSupport(particularPhysicalDevice);
-        swapchainSuitable = swapchainSupport.formats.length      != 0 && 
+        swapchainSuitable = swapchainSupport.formats.length      != 0 &&
                             swapchainSupport.presentModes.length != 0;
 
         if (!swapchainSuitable) {
@@ -1047,7 +1053,7 @@ struct Renderer {
 
         VkPhysicalDevice[] physicalDevices;
         physicalDevices.length = numPhysicalDevices;
-        vkEnumeratePhysicalDevices(this.instance, &numPhysicalDevices, 
+        vkEnumeratePhysicalDevices(this.instance, &numPhysicalDevices,
                                    physicalDevices.ptr);
 
         foreach (physicalDevice; physicalDevices) {
@@ -1073,6 +1079,13 @@ struct Renderer {
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
             particularPhysicalDevice, this.surface, &ret.capabilities);
 
+        globals.numSwapchainImages = ret.capabilities.maxImageCount;
+
+        debug {
+            import std.conv : to;
+            log("Our swapchain has " ~ ret.capabilities.maxImageCount.to!string ~ " images");
+        }
+
         uint numFormats;
         vkGetPhysicalDeviceSurfaceFormatsKHR(
             particularPhysicalDevice, this.surface, &numFormats, null);
@@ -1085,21 +1098,21 @@ struct Renderer {
             particularPhysicalDevice, this.surface, &numPresentModes, null);
         ret.presentModes.length = numPresentModes;
         vkGetPhysicalDeviceSurfacePresentModesKHR(
-            particularPhysicalDevice, 
-            this.surface, 
-            &numPresentModes, 
+            particularPhysicalDevice,
+            this.surface,
+            &numPresentModes,
             ret.presentModes.ptr
         );
 
         return ret;
     }
 
-    VkSurfaceFormatKHR selectSurfaceFormat(in VkSurfaceFormatKHR[] formats) 
+    VkSurfaceFormatKHR selectSurfaceFormat(in VkSurfaceFormatKHR[] formats)
         in (formats.length != 0)
     {
         foreach (format; formats) {
             if (format.format == VK_FORMAT_B8G8R8_SRGB &&
-                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) 
+                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             {
                 return format;
             }
@@ -1117,7 +1130,7 @@ struct Renderer {
     VkPresentModeKHR selectPresentMode(VkPresentModeKHR[] presentModes) {
         foreach (presentMode; presentModes) {
             // Triple-buffered. Might prefer IMMEDIATE for non-vsync.
-            if (presentMode == VK_PRESENT_MODE_MAILBOX_KHR) {                
+            if (presentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
                 return presentMode;
             }
         }
@@ -1126,7 +1139,7 @@ struct Renderer {
         return VK_PRESENT_MODE_FIFO_KHR;
     }
 
-    VkExtent2D selectExtent(   GLFWwindow              *window, 
+    VkExtent2D selectExtent(   GLFWwindow              *window,
                             in VkSurfaceCapabilitiesKHR capabilities) {
 
         // If width/height are set to 0xFFFFFFFF (UINT32_MAX) then the swapchain
@@ -1170,7 +1183,7 @@ struct Renderer {
         };
 
         VkShaderModule ret;
-        auto createResult = 
+        auto createResult =
             vkCreateShaderModule(logicalDevice, &createInfo, null, &ret);
         enforce(createResult == VK_SUCCESS, "Failed to create shader module");
 
@@ -1178,15 +1191,16 @@ struct Renderer {
     }
 
     /// Acquire the imageIndex for the next frame.
-    uint acquireNextImageIndex(uint previousFrameImageIndex) {
+    uint acquireImageIndex(uint desiredImageIndex) {
         uint imageIndex;
-        auto errors = vkAcquireNextImageKHR(this.logicalDevice, 
-                                            this.swapchain.swapchain, 
+        auto errors = vkAcquireNextImageKHR(this.logicalDevice,
+                                            this.swapchain.swapchain,
                                             ulong.max, // timeout (ns)
-                                            this.swapchain.imageAvailableSemaphore,
+                                            this.swapchain.imageAvailableSemaphores[desiredImageIndex],
                                             VK_NULL_HANDLE, // fence
                                             &imageIndex);
         enforce(!errors);
+        assert(imageIndex == desiredImageIndex);
         return imageIndex;
     }
 
@@ -1202,7 +1216,7 @@ struct Renderer {
         VkDeviceMemory memory;
         ulong          size; /// The size in bytes of the buffer's storage
 
-        /// How many elements of type DataT can this buffer hold? 
+        /// How many elements of type DataT can this buffer hold?
         uint elementCount() const {
             return cast(uint) this.size / DataT.sizeof;
         }
@@ -1216,7 +1230,7 @@ struct Renderer {
     /// Create a buffer intended to hold numElements variables of type T.
     /// T: The data type to be stored in the buffer.
     /// numElements: How many T's the buffer should be able to hold.
-    Buffer!T createBuffer(T)(VkBufferUsageFlags    bufferUsage, 
+    Buffer!T createBuffer(T)(VkBufferUsageFlags    bufferUsage,
                              VkMemoryPropertyFlags memoryProperties,
                              ulong                 numElements = 1)
     {
@@ -1244,7 +1258,7 @@ struct Renderer {
 
         VkMemoryAllocateInfo allocInfo = {
             allocationSize  : memRequirements.size,
-            memoryTypeIndex : findMemoryType(memRequirements.memoryTypeBits, 
+            memoryTypeIndex : findMemoryType(memRequirements.memoryTypeBits,
                                              memoryProperties),
         };
 
@@ -1274,9 +1288,9 @@ struct Renderer {
 
     /// Issue a command to render the given number of instances of the given
     /// vertex buffer.
-    void issueRenderCommands(DataT)(uint         imageIndex, 
-                                    Buffer!DataT buffer, 
-                                    uint         numInstances) 
+    void issueRenderCommands(DataT)(uint         imageIndex,
+                                    Buffer!DataT buffer,
+                                    uint         numInstances)
     {
         VkBuffer[1]     buffers = [buffer.buffer];
         VkDeviceSize[1] offsets = [0];
@@ -1288,9 +1302,9 @@ struct Renderer {
 
     /// Issue a command to update this buffer. NOTE: This cannot be performed
     /// during a render pass, according to the Vulkan spec
-    void issueUpdateCommand(DataT)(uint         imageIndex, 
+    void issueUpdateCommand(DataT)(uint         imageIndex,
                                    Buffer!DataT buffer,
-                                   DataT[]      data) 
+                                   DataT[]      data)
          in (data.length != 0)
          in (data.length * DataT.sizeof <= buffer.size)
          in (buffer.size < 65536) // vkspec pp. 832
@@ -1305,9 +1319,9 @@ struct Renderer {
         auto cb = this.swapchain.commandBuffers[imageIndex];
 
         // Wait for the command buffer to be ready (signalled by vkQueueSubmit)
-        vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence, false, ulong.max);
+        vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFences[imageIndex], false, ulong.max);
         // Reset the fence for next time
-        vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence);
+        vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFences[imageIndex]);
         // Reset the command buffer, putting it in the Initial state
         vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);
         // Begin the command buffer, putting it in the Recording state
@@ -1334,11 +1348,11 @@ struct Renderer {
         };
 
         vkCmdBeginRenderPass   (cb, &info, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline      (cb, VK_PIPELINE_BIND_POINT_GRAPHICS, 
+        vkCmdBindPipeline      (cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 this.swapchain.pipeline);
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                                this.pipelineLayout, 0, 1, 
-                                &this.swapchain.descriptorSets[imageIndex], 0, 
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                this.pipelineLayout, 0, 1,
+                                &this.swapchain.descriptorSets[imageIndex], 0,
                                 null);
     }
 
@@ -1351,10 +1365,10 @@ struct Renderer {
         enforce(!errors);
     }
 
-    /// Select a memory type that satisfies the requested properties. 
+    /// Select a memory type that satisfies the requested properties.
     /// TODO: wtf does this actually do lmao document this better
-    uint findMemoryType(uint typeFilter, 
-                        VkMemoryPropertyFlags requestedProperties) 
+    uint findMemoryType(uint typeFilter,
+                        VkMemoryPropertyFlags requestedProperties)
     {
         VkPhysicalDeviceMemoryProperties memProperties;
         vkGetPhysicalDeviceMemoryProperties(
@@ -1362,9 +1376,9 @@ struct Renderer {
 
         foreach (uint i; 0 .. memProperties.memoryTypeCount) {
             immutable matchesFilter = typeFilter & (1 << i);
-            immutable allPropertiesAvailable = ( 
-                memProperties.memoryTypes[i].propertyFlags & 
-                requestedProperties 
+            immutable allPropertiesAvailable = (
+                memProperties.memoryTypes[i].propertyFlags &
+                requestedProperties
             );
 
             if (matchesFilter && allPropertiesAvailable) {
@@ -1433,12 +1447,12 @@ struct Renderer {
 
         VkMemoryAllocateInfo allocInfo = {
             allocationSize  : memoryRequirements.size,
-            memoryTypeIndex : findMemoryType(memoryRequirements.memoryTypeBits, 
+            memoryTypeIndex : findMemoryType(memoryRequirements.memoryTypeBits,
                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
         };
 
         VkDeviceMemory memory;
-        auto allocErrors = 
+        auto allocErrors =
             vkAllocateMemory(this.logicalDevice, &allocInfo, null, &memory);
         enforce(!allocErrors);
 
@@ -1447,18 +1461,20 @@ struct Renderer {
         DepthResources ret = {
             image     : image,
             memory    : memory,
-            imageView : createImageView(this.logicalDevice, image, imageFormat, 
+            imageView : createImageView(this.logicalDevice, image, imageFormat,
                                         VK_IMAGE_ASPECT_DEPTH_BIT),
         };
 
         return ret;
     }
 
-    VkDescriptorSet[] 
-    createDescriptorSets(uint count,
-                         VkDescriptorPool      descriptorPool,
-                         VkDescriptorSetLayout descriptorSetLayout,
-                         UniformBuffer[]       uniformBuffers) 
+    VkDescriptorSet[] createDescriptorSets
+        (uint count,
+         VkDescriptorPool      descriptorPool,
+         VkDescriptorSetLayout descriptorSetLayout,
+         UniformBuffer[]       uniformBuffers)
+    in  (uniformBuffers.length == count)
+    out (r; r.length == count)
     {
         VkDescriptorSetLayout[] layouts;
         layouts.length = count;
@@ -1501,15 +1517,17 @@ struct Renderer {
         return ret;
     }
 
-    UniformBuffer[] createUniformBuffers(ulong count) {
+    UniformBuffer[] createUniformBuffers(ulong count)
+    out (r; r.length == count)
+    {
         UniformBuffer[] ret;
         ret.length = count;
 
         foreach (i; 0 .. ret.length) {
             ret[i] = createBuffer!Uniforms(
-                ( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | 
-                  VK_BUFFER_USAGE_TRANSFER_DST_BIT   ), 
-                ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT  | 
+                ( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT   ),
+                ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT  |
                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
             );
         }

@@ -1,12 +1,14 @@
 module game;
 
 import std.algorithm;
+import std.conv        : to;
 import std.typecons    : Nullable;
 import std.exception   : enforce;
 import std.parallelism : parallel;
+import std.experimental.logger;
 
 import glfw3.api;
-import gl3n.linalg; 
+import gl3n.linalg;
 import erupted;
 static import globals;
 
@@ -25,94 +27,195 @@ enum GameAction {
     QUIT_GAME,
 }
 
+
 enum MOVEMENT_IMPULSE = 0.001;
 
-struct Frame {
 
-    /// An index into the Vulkan swapchain corresponding to the image this frame
-    /// will be rendered into.
-    uint imageIndex; 
+// Per-entity component data
+struct EcsState {
+    uint nextEntityID = 0;
 
-    mat4 projection; /// Projection uniform
-
-    // Components
-
-    Nullable!vec3         []position;
-    Nullable!vec3         []velocity;
-    Nullable!vec3         []acceleration;
-    Nullable!uint         []lookAtTargetEntity;
-    Nullable!bool         []controlledByPlayer;
-    Nullable!float        []scale;
-    Nullable!mat4         []modelMatrix;
-    Nullable!mat4         []viewMatrix;
-    Nullable!VertexBuffer []vertexBuffer;
-
-    /// How many entities exist in this frame?
-    auto numEntities() immutable {
-        return position.length;
-    }
-
-    invariant {
-        assert(position.length == position.length);
-        assert(position.length == velocity.length);
-        assert(position.length == acceleration.length);
-        assert(position.length == lookAtTargetEntity.length);
-        assert(position.length == controlledByPlayer.length);
-        assert(position.length == scale.length);
-        assert(position.length == modelMatrix.length);
-        assert(position.length == viewMatrix.length);
-        assert(position.length == vertexBuffer.length);
-
-        assert(scale.filter!(s => !s.isNull).all!(s => s >= 0.0));
-    }
+    Nullable!vec3         [globals.MAX_ENTITIES]position;
+    Nullable!vec3         [globals.MAX_ENTITIES]velocity;
+    Nullable!vec3         [globals.MAX_ENTITIES]acceleration;
+    Nullable!uint         [globals.MAX_ENTITIES]lookAtTargetEntity;
+    Nullable!bool         [globals.MAX_ENTITIES]controlledByPlayer;
+    Nullable!float        [globals.MAX_ENTITIES]scale;
+    Nullable!mat4         [globals.MAX_ENTITIES]modelMatrix;
+    Nullable!mat4         [globals.MAX_ENTITIES]viewMatrix;
+    Nullable!VertexBuffer [globals.MAX_ENTITIES]vertexBuffer;
 
     // Entities
 
     uint createEntity()
-        out (ret; this.position.length == ret + 1)
+        in  (nextEntityID != globals.MAX_ENTITIES)
+        out (ret; nextEntityID == (ret + 1))
     {
-        static uint nextEntityID = 0;
-
-        immutable newLength = 1 + nextEntityID;
-
-        this.position.length           = newLength;
-        this.velocity.length           = newLength;
-        this.acceleration.length       = newLength;
-        this.scale.length              = newLength;
-        this.viewMatrix.length         = newLength;
-        this.lookAtTargetEntity.length = newLength;
-        this.controlledByPlayer.length = newLength;
-        this.modelMatrix.length        = newLength;
-        this.vertexBuffer.length       = newLength;
-
         return nextEntityID++;
     }
 
-    // Player input
+    // Systems
+
+    void updateVelocities() {
+        auto velEnts = entitiesWithComponent(this.velocity);
+        auto accEnts = entitiesWithComponent(this.acceleration);
+        auto ents    = setIntersection(velEnts, accEnts);
+        debug(ecs) log(ents);
+        foreach (e; ents) {
+            this.velocity[e].get() += this.acceleration[e].get();
+        }
+    }
+
+
+    void updatePositions() {
+        auto posEnts = entitiesWithComponent(this.position);
+        auto velEnts = entitiesWithComponent(this.velocity);
+        auto ents    = setIntersection(posEnts, velEnts);
+        debug(ecs) log(ents);
+        foreach (e; ents.parallel) {
+            this.position[e].get() += this.velocity[e].get();
+        }
+    }
+
+
+    void updateModelMatrices() {
+        auto posEnts = entitiesWithComponent(this.position);
+        auto sclEnts = entitiesWithComponent(this.scale);
+        auto ents    = setIntersection(posEnts, sclEnts);
+        debug(ecs) log(ents);
+
+        foreach (e; ents.parallel) {
+            auto scale    = this.scale[e].get;
+            auto position = this.position[e].get;
+            this.modelMatrix[e] = mat4.identity.scale(scale, scale, scale)
+                                                    .translate(position)
+                                                    .transposed();
+        }
+    }
+
+
+    // Update camera view matrices
+    void updateViewMatrices() {
+        auto lookAtEnts = entitiesWithComponent(this.lookAtTargetEntity);
+        auto posEnts    = entitiesWithComponent(this.position);
+        auto cameras    = setIntersection(lookAtEnts, posEnts);
+        debug(ecs) log(cameras);
+        foreach (e; cameras) {
+            vec3 eyePos = this.position[e].get();
+            uint targetEntity = this.lookAtTargetEntity[e].get();
+            vec3 targetPos    = this.position[targetEntity].get();
+            this.viewMatrix[e] = lookAt(eyePos, targetPos, vec3(0, 1.up, 0));
+        }
+    }
+
+
+    // Prepare updated uniform data
+    Uniforms updateUniforms(mat4 projection) {
+        // NOTE: We're explicitly assuming here that only one entity (the
+        // camera) will have a view matrix. Or at least, if there are multiple
+        // view matrices, we're always using the first one.
+        auto viewMatrixEnts = entitiesWithComponent(this.viewMatrix);
+        debug log("viewMatrixEnts.length = " ~ viewMatrixEnts.length.to!string);
+        assert(viewMatrixEnts.length == 1);
+
+        import std.range : front;
+        auto viewMatrix = this.viewMatrix[viewMatrixEnts.front].get;
+        debug(ecs) log("Camera entity is: ", viewMatrixEnts.front);
+
+        Uniforms uniformData = {
+            projection : projection,
+            view       : viewMatrix,
+            // Models is not set yet
+        };
+
+        auto modelMatrixEnts = entitiesWithComponent(this.modelMatrix);
+
+        uint i = 0;
+        foreach (e; modelMatrixEnts) {
+            uniformData.models[i++] = this.modelMatrix[e].get();
+        }
+
+        return uniformData;
+    }
+
+
+    // Render vertex buffers
+    void renderEntities(ref Renderer renderer, Uniforms ubo, uint imageIndex) {
+        auto modelEnts = entitiesWithComponent(this.modelMatrix);
+        auto vbufEnts  = entitiesWithComponent(this.vertexBuffer);
+        auto renderableEntities = setIntersection(modelEnts, vbufEnts);
+        debug(ecs) log(renderableEntities);
+
+        renderer.beginCommandsForFrame(imageIndex, ubo);
+
+        uint[VertexBuffer] counts;
+
+        foreach (e; vbufEnts) {
+            auto vbuf = this.vertexBuffer[e].get();
+            counts[vbuf]++;
+        }
+
+        foreach (vbuf, instanceCount; counts) {
+            renderer.issueRenderCommands(imageIndex, vbuf, instanceCount);
+        }
+
+        renderer.endCommandsForFrame(imageIndex);
+    }
+
+
+    // Set player's acceleration based on player input
+    void updatePlayerAcceleration(bool[] actionRequested)
+        in (actionRequested.length == GameAction.max + 1)
+    {
+        auto playerEntities = entitiesWithComponent(this.controlledByPlayer);
+        auto accelEntities  = entitiesWithComponent(this.acceleration);
+        auto ents = setIntersection(playerEntities, accelEntities);
+
+        foreach (e; ents) {
+            vec3 accel = vec3(0);
+
+            if (actionRequested[GameAction.MOVE_FORWARDS])  { accel.z += MOVEMENT_IMPULSE.forwards;  }
+            if (actionRequested[GameAction.MOVE_BACKWARDS]) { accel.z += MOVEMENT_IMPULSE.backwards; }
+            if (actionRequested[GameAction.MOVE_RIGHT])     { accel.x += MOVEMENT_IMPULSE.right;     }
+            if (actionRequested[GameAction.MOVE_LEFT])      { accel.x += MOVEMENT_IMPULSE.left;      }
+            if (actionRequested[GameAction.MOVE_UP])        { accel.y += MOVEMENT_IMPULSE.up;        }
+            if (actionRequested[GameAction.MOVE_DOWN])      { accel.y += MOVEMENT_IMPULSE.down;      }
+
+            // Output
+            this.acceleration[e] = accel;
+        }
+    }
+}
+
+alias Entity = size_t;
+
+struct Frame {
+    /**
+        This is used as an index into the arrays in SwapchainWithDependents to
+        associate this frame with Vulkan state within the renderer.
+    */
+    uint imageIndex;
+
+    mat4 projection; /// Projection uniform
+
+    EcsState ecs;
 
     /// Has the player requested the specified action this frame?
     bool[GameAction.max + 1] actionRequested = [false];
 }
 
-Frame tick(Frame previousFrame, ref Renderer renderer) {
+
+Frame tick(Frame *previousFrame, ref Renderer renderer) {
     import std.algorithm : map, fold, setIntersection, each;
-    import std.experimental.logger;
 
-    Frame thisFrame = {
-        projection         : previousFrame.projection,
-        position           : previousFrame.position,
-        velocity           : previousFrame.velocity,
-        acceleration       : previousFrame.acceleration,
-        lookAtTargetEntity : previousFrame.lookAtTargetEntity,
-        controlledByPlayer : previousFrame.controlledByPlayer,
-        scale              : previousFrame.scale,
-        modelMatrix        : previousFrame.modelMatrix,
-        viewMatrix         : previousFrame.viewMatrix,
-        vertexBuffer       : previousFrame.vertexBuffer,
-        actionRequested    : [false],
-    };
+    Frame thisFrame;
+    //thisFrame.setNumEntities(previousFrame.numEntities());
 
-    thisFrame.imageIndex = renderer.acquireNextImageIndex(previousFrame.imageIndex);
+    thisFrame.ecs = previousFrame.ecs;
+    thisFrame.actionRequested[] = false;
+
+    thisFrame.imageIndex = renderer.acquireImageIndex(
+        (previousFrame.imageIndex + 1) % globals.numSwapchainImages);
 
     glfwSetWindowUserPointer(globals.window, &thisFrame);
 
@@ -125,140 +228,13 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         Run systems
     */
 
-    // Update velocities
-
-    void updateVelocities() {
-        auto velEnts = entitiesWithComponent(thisFrame.velocity);
-        auto accEnts = entitiesWithComponent(thisFrame.acceleration);
-        auto ents    = setIntersection(velEnts, accEnts);
-        debug(ecs) log(ents);
-        foreach (e; ents) {
-            thisFrame.velocity[e] += thisFrame.acceleration[e];
-        }
-    }
-
-    // Update positions
-
-    void updatePositions() {
-        auto posEnts = entitiesWithComponent(thisFrame.position);
-        auto velEnts = entitiesWithComponent(thisFrame.velocity);
-        auto ents    = setIntersection(posEnts, velEnts);
-        debug(ecs) log(ents);
-        foreach (e; ents.parallel) {
-            thisFrame.position[e] += thisFrame.velocity[e];
-        }
-    }
-
-    // Update model matrices
-
-    void updateModelMatrices() {
-        auto posEnts = entitiesWithComponent(thisFrame.position);
-        auto sclEnts = entitiesWithComponent(thisFrame.scale);
-        auto ents    = setIntersection(posEnts, sclEnts);
-        debug(ecs) log(ents);
-
-        foreach (e; ents.parallel) {
-            auto scale    = thisFrame.scale[e].get;
-            auto position = thisFrame.position[e].get;
-            thisFrame.modelMatrix[e] = mat4.identity.scale(scale, scale, scale)
-                                                    .translate(position)
-                                                    .transposed();
-        }
-    }
-
-    // Update camera view matrices
-
-    void updateViewMatrices() {
-        auto lookAtEnts = entitiesWithComponent(thisFrame.lookAtTargetEntity);
-        auto posEnts    = entitiesWithComponent(thisFrame.position);
-        auto cameras    = setIntersection(lookAtEnts, posEnts);
-        debug(ecs) log(cameras);
-        foreach (e; cameras) {
-            vec3 eyePos = thisFrame.position[e].get();
-            uint targetEntity = thisFrame.lookAtTargetEntity[e].get();
-            vec3 targetPos    = thisFrame.position[targetEntity].get();
-            thisFrame.viewMatrix[e] = lookAt(eyePos, targetPos, vec3(0, 1.up, 0));
-        }
-    }
-
-    // Prepare updated uniform data
-
-    Uniforms updateUniforms() {
-        // NOTE: We're explicitly assuming here that only one entity (the
-        // camera) will have a view matrix. Or at least, if there are multiple
-        // view matrices, we're always using the first one.
-        auto viewMatrixEnts = entitiesWithComponent(thisFrame.viewMatrix);
-        auto viewMatrix = thisFrame.viewMatrix[viewMatrixEnts.front].get;
-        debug(ecs) log("Camera entity is: ", viewMatrixEnts.front);
-
-        Uniforms uniformData = {
-            projection : thisFrame.projection,
-            view       : viewMatrix,
-            // Models is not set yet
-        };
-
-        auto modelMatrixEnts = entitiesWithComponent(thisFrame.modelMatrix);
-
-        uint i = 0;
-        foreach (e; modelMatrixEnts) {
-            uniformData.models[i++] = thisFrame.modelMatrix[e];
-        }
-
-        return uniformData;
-    }
-
-    // Render vertex buffers
-
-    void renderEntities(Uniforms ubo) {
-        auto modelEnts = entitiesWithComponent(thisFrame.modelMatrix);
-        auto vbufEnts  = entitiesWithComponent(thisFrame.vertexBuffer);
-        auto renderableEntities = setIntersection(modelEnts, vbufEnts);
-        debug(ecs) log(renderableEntities);
-
-        renderer.beginCommandsForFrame(thisFrame.imageIndex, ubo);
-
-        uint[VertexBuffer] counts;
-
-        foreach (e; vbufEnts) {
-            auto vbuf = thisFrame.vertexBuffer[e].get();
-            counts[vbuf]++;
-        }
-
-        foreach (vbuf, count; counts) {
-            renderer.issueRenderCommands(thisFrame.imageIndex, vbuf, count);
-        }
-
-        renderer.endCommandsForFrame(thisFrame.imageIndex);
-    }
-
-    // Set player's acceleration based on player input
-    void updatePlayerAcceleration() {
-        auto playerEntities = entitiesWithComponent(thisFrame.controlledByPlayer);
-        auto accelEntities  = entitiesWithComponent(thisFrame.acceleration);
-        auto ents = setIntersection(playerEntities, accelEntities);
-
-        foreach (e; ents) {
-            vec3 accel = vec3(0);
-
-            if (thisFrame.actionRequested[GameAction.MOVE_FORWARDS])  { accel.z += MOVEMENT_IMPULSE.forwards;  }
-            if (thisFrame.actionRequested[GameAction.MOVE_BACKWARDS]) { accel.z += MOVEMENT_IMPULSE.backwards; }
-            if (thisFrame.actionRequested[GameAction.MOVE_RIGHT])     { accel.x += MOVEMENT_IMPULSE.right;     }
-            if (thisFrame.actionRequested[GameAction.MOVE_LEFT])      { accel.x += MOVEMENT_IMPULSE.left;      }
-            if (thisFrame.actionRequested[GameAction.MOVE_UP])        { accel.y += MOVEMENT_IMPULSE.up;        }
-            if (thisFrame.actionRequested[GameAction.MOVE_DOWN])      { accel.y += MOVEMENT_IMPULSE.down;      }
-
-            // Output
-            thisFrame.acceleration[e] = accel;
-        }
-    }
-
-    updateVelocities();
-    updatePositions();
-    updateModelMatrices();
-    updateViewMatrices();
-    updatePlayerAcceleration();
-    Uniforms ubo = updateUniforms();
-    renderEntities(ubo);
+    thisFrame.ecs.updateVelocities();
+    thisFrame.ecs.updatePositions();
+    thisFrame.ecs.updateModelMatrices();
+    thisFrame.ecs.updateViewMatrices();
+    thisFrame.ecs.updatePlayerAcceleration(thisFrame.actionRequested);
+    Uniforms ubo = thisFrame.ecs.updateUniforms(thisFrame.projection);
+    thisFrame.ecs.renderEntities(renderer, ubo, thisFrame.imageIndex);
 
     if (thisFrame.actionRequested[GameAction.QUIT_GAME]) {
         glfwSetWindowShouldClose(globals.window, GLFW_TRUE);
@@ -267,15 +243,32 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     return thisFrame;
 }
 
-auto entitiesWithComponent(T)(T[] array) pure {
+
+Entity[] entitiesWithComponent(T)(T[] array) pure {
     import std.range     : iota;
-    import std.algorithm : filter;
-    auto indices = iota(0, array.length, 1); 
-    auto ret = indices.filter!(i => !array[i].isNull);
-    import std.experimental.logger;
-    //debug log(" returning ", ret);
+    import std.algorithm : filter, map;
+
+    auto indices = iota(0, array.length, 1);
+    auto ents = indices.filter!(i => !array[i].isNull);
+
+    Entity[] ret;
+    ret.length = 1;
+
+    foreach (e; ents) {
+        ret[$-1] = e;
+        ret.length += 1;
+    }
+
+    ret.length -= 1;
+
+    debug(ecs) {
+        import std.experimental.logger : log;
+        log(" returning ", ret);
+    }
+
     return ret;
 }
+
 
 /// Returns the GameAction associated with this keyboard key.
 /// @key: should be a GLFW_KEY_* value.

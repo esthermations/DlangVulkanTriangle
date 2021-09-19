@@ -13,3 +13,6 @@ dlangvulkantriangle-test-*
 *.o
 *.obj
 *.lst
+*.spv
+.vscode
+dub.selections.json

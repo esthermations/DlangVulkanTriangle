@@ -1,6 +1,7 @@
 import std.stdio;
 import std.exception;
 import std.experimental.logger;
+import std.conv : to;
 import erupted;
 import glfw3.api;
 import gl3n.linalg;
@@ -14,31 +15,30 @@ void main() {
 
     import core.time;
 
-    Frame initialFrame;
+    debug log("Got here!");
+
+    Frame *initialFrame = new Frame;
 
     initialFrame.imageIndex = 0;
     initialFrame.projection = util.perspective(
-        globals.verticalFieldOfView, 
-        globals.aspectRatio, 
-        globals.nearPlane, 
+        globals.verticalFieldOfView,
+        globals.aspectRatio,
+        globals.nearPlane,
         globals.farPlane
     );
 
-    auto player      = initialFrame.createEntity;
-    auto camera      = initialFrame.createEntity;
-    auto theStranger = initialFrame.createEntity;
+    auto player      = initialFrame.ecs.createEntity;
+    auto camera      = initialFrame.ecs.createEntity;
 
     {
-        alias f = initialFrame;
+        initialFrame.ecs.position           [player] = vec3(0);
+        initialFrame.ecs.scale              [player] = 10.0;
+        initialFrame.ecs.velocity           [player] = vec3(0);
+        initialFrame.ecs.acceleration       [player] = vec3(0);
+        initialFrame.ecs.controlledByPlayer [player] = true;
 
-        f.position    [player]       = vec3(0);
-        f.scale       [player]       = 10.0;
-        f.velocity    [player]       = vec3(0);
-        f.acceleration[player]       = vec3(0);
-        f.controlledByPlayer[player] = true;
-
-        f.position          [camera] = vec3(0.0, 5.up, 5.backwards);
-        f.lookAtTargetEntity[camera] = player;
+        initialFrame.ecs.position           [camera] = vec3(0.0, 5.up, 5.backwards);
+        initialFrame.ecs.lookAtTargetEntity [camera] = player;
     }
 
     // Init GLFW
@@ -52,10 +52,10 @@ void main() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
     globals.window = glfwCreateWindow(
-        globals.windowWidth, 
-        globals.windowHeight, 
-        "Carl", 
-        null, 
+        globals.windowWidth,
+        globals.windowHeight,
+        "Carl",
+        null,
         null
     );
     scope (exit) glfwDestroyWindow(globals.window);
@@ -91,9 +91,9 @@ void main() {
     };
 
     renderer.initialise(
-        appInfo, 
-        requiredLayers, 
-        requiredInstanceExtensions, 
+        appInfo,
+        requiredLayers,
+        requiredInstanceExtensions,
         requiredDeviceExtensions,
     );
 
@@ -116,17 +116,17 @@ void main() {
     // Create vertex buffer using those vertices
 
     auto barrelVertexBuffer = renderer.createBuffer!Vertex(
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
-        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
         vertices.length,
     );
 
     renderer.setBufferData(barrelVertexBuffer, vertices);
-    initialFrame.vertexBuffer[player]      = barrelVertexBuffer;
+    initialFrame.ecs.vertexBuffer[player] = barrelVertexBuffer;
 
     foreach (i; 0 .. 990) {
-        auto e = initialFrame.createEntity();
+        auto e = initialFrame.ecs.createEntity();
 
         import std.random : uniform;
 
@@ -134,9 +134,9 @@ void main() {
         float y = uniform(-10.0, 10.0);
         float z = uniform(-10.0, 10.0);
 
-        initialFrame.vertexBuffer[e] = barrelVertexBuffer;
-        initialFrame.position    [e] = vec3(x, y, z);
-        initialFrame.scale       [e] = 5.0 + (i % 5);
+        initialFrame.ecs.vertexBuffer[e] = barrelVertexBuffer;
+        initialFrame.ecs.position    [e] = vec3(x, y, z);
+        initialFrame.ecs.scale       [e] = 0.001 + (i % 5) * 0.01;
     }
 
     /*
@@ -145,15 +145,24 @@ void main() {
     ---------------------------------------------------------------------------
     */
 
-    uint frameNumber = 0;
 
-    Frame thisFrame = game.tick(initialFrame, renderer);
+    Frame[] framesInFlight;
+    framesInFlight.length = globals.numSwapchainImages;
+
+    size_t currFrame = 0;
+    framesInFlight[currFrame] = game.tick(initialFrame, renderer);
 
     import core.thread.osthread;
 
     while (!glfwWindowShouldClose(globals.window)) {
-        renderer.render(thisFrame);
-        thisFrame = game.tick(thisFrame, renderer);
+
+        renderer.render(framesInFlight[currFrame]);
+        framesInFlight[currFrame] = game.tick(&framesInFlight[currFrame], renderer);
+
+        debug log ("current frame image index is " ~ framesInFlight[currFrame].imageIndex.to!string);
+
+        // Advance to the next Frame struct
+        currFrame = (currFrame + 1) % framesInFlight.length;
     } // End of main loop
 
     renderer.cleanupBuffer!(Vertex)(barrelVertexBuffer);

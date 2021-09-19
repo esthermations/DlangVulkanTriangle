@@ -16,7 +16,7 @@
 		{
 			"name": "executable",
 			"targetType": "executable",
-			"preBuildCommands": ["sh ./compileShaders.sh"]
+			"preBuildCommands": ["powershell.exe -File ./compileShaders.ps1"]
 		}
 	]
 }
