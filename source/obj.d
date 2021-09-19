@@ -21,7 +21,7 @@ ObjData parseObj(string objFilePath) {
     import std.string    : strip, split, startsWith;
     import std.algorithm : map;
 
-    Vector!(float, N) stringsToVec(int N)(string[] splitString) 
+    Vector!(float, N) stringsToVec(int N)(string[] splitString)
     {
         import std.format : format;
         enforce(splitString.length == N, "Vector must have %s components".format(N));
@@ -40,7 +40,7 @@ ObjData parseObj(string objFilePath) {
     ObjData ret;
 
     foreach (splitLine; objFile.byLineCopy.map!(strip)
-                                          .map!(s => s.split(" "))) 
+                                          .map!(s => s.split(" ")))
     {
         //debug log("Parsing line: ", splitLine);
         if (splitLine.length == 0 || splitLine[0].startsWith("#")) {
@@ -52,8 +52,33 @@ ObjData parseObj(string objFilePath) {
             case "vn": uniqueNormals   ~= stringsToVec!3(splitLine[1 .. $]); break;
             case "vt": uniqueTexcoords ~= stringsToVec!2(splitLine[1 .. $]); break;
 
-            case "f" :  
-                foreach (string face; splitLine[1 .. $]) {
+            case "f" : {
+
+                /*
+                    Handle quads by converting them into two triangles assuming
+                    a certain vertex winding.
+                */
+
+                const numFaces = splitLine[1 .. $].length;
+                const f = splitLine[1 .. $];
+                string[] faces;
+
+                if (numFaces == 4) {
+                    // then we're dealing with quads
+                    faces.length = 6;
+                    faces = [
+                        /* This is assuming a certain winding! */
+                        /* triangle 1 */ f[0], f[1], f[2],
+                        /* triangle 2 */ f[0], f[2], f[3],
+                    ];
+                } else {
+                    // only triangles or quads supported
+                    assert(numFaces == 3);
+                    faces.length = 3;
+                    faces = splitLine[1 .. $];
+                }
+
+                foreach (string face; faces) {
                     // face will be a string like "1/2/3" or "1//3"
 
                     //debug log("Parsing face: ", face);
@@ -82,6 +107,7 @@ ObjData parseObj(string objFilePath) {
                     }
                 }
                 break;
+            }
             case "mtllib": break;
             case "usemtl": break;
             case "g"     : break;
