@@ -13,7 +13,8 @@ import erupted;
 static import globals;
 
 import util;
-import renderer;
+import renderer_interface;
+import shader_abi;
 
 enum GameAction {
     NO_ACTION,
@@ -28,26 +29,27 @@ enum GameAction {
 }
 
 
-enum MOVEMENT_IMPULSE = 0.001;
+alias Entity = size_t;
 
 
 // Per-entity component data
 struct EcsState {
-    uint nextEntityID = 0;
 
     Nullable!vec3         [globals.MAX_ENTITIES]position;
     Nullable!vec3         [globals.MAX_ENTITIES]velocity;
     Nullable!vec3         [globals.MAX_ENTITIES]acceleration;
-    Nullable!uint         [globals.MAX_ENTITIES]lookAtTargetEntity;
+    Nullable!Entity       [globals.MAX_ENTITIES]lookAtTargetEntity;
     Nullable!bool         [globals.MAX_ENTITIES]controlledByPlayer;
     Nullable!float        [globals.MAX_ENTITIES]scale;
     Nullable!mat4         [globals.MAX_ENTITIES]modelMatrix;
     Nullable!mat4         [globals.MAX_ENTITIES]viewMatrix;
-    Nullable!VertexBuffer [globals.MAX_ENTITIES]vertexBuffer;
+    Nullable!(Renderer.Buffer) [globals.MAX_ENTITIES]vertexBuffer;
 
     // Entities
 
-    uint createEntity()
+    Entity nextEntityID = 0;
+
+    Entity createEntity()
         in  (nextEntityID != globals.MAX_ENTITIES)
         out (ret; nextEntityID == (ret + 1))
     {
@@ -102,14 +104,14 @@ struct EcsState {
         debug(ecs) log(cameras);
         foreach (e; cameras) {
             vec3 eyePos = this.position[e].get();
-            uint targetEntity = this.lookAtTargetEntity[e].get();
+            Entity targetEntity = this.lookAtTargetEntity[e].get();
             vec3 targetPos    = this.position[targetEntity].get();
             this.viewMatrix[e] = lookAt(eyePos, targetPos, vec3(0, 1.up, 0));
         }
     }
 
 
-    // Prepare updated uniform data
+    /// Prepare updated uniform data
     Uniforms updateUniforms(mat4 projection) {
         // NOTE: We're explicitly assuming here that only one entity (the
         // camera) will have a view matrix. Or at least, if there are multiple
@@ -139,16 +141,21 @@ struct EcsState {
     }
 
 
-    // Render vertex buffers
-    void renderEntities(ref Renderer renderer, Uniforms ubo, uint imageIndex) {
+    /// Render vertex buffers
+    void renderEntities(Renderer renderer, Uniforms ubo, FrameId fid) {
+        /*
+            TODO: Entity data sorting per vertex buffer, see comment in
+            shader.vert.
+        */
+
         auto modelEnts = entitiesWithComponent(this.modelMatrix);
         auto vbufEnts  = entitiesWithComponent(this.vertexBuffer);
         auto renderableEntities = setIntersection(modelEnts, vbufEnts);
         debug(ecs) log(renderableEntities);
 
-        renderer.beginCommandsForFrame(imageIndex, ubo);
+        renderer.beginCommandsForFrame(fid, cast(ubyte[]) ubo);
 
-        uint[VertexBuffer] counts;
+        uint[Renderer.Buffer] counts;
 
         foreach (e; vbufEnts) {
             auto vbuf = this.vertexBuffer[e].get();
@@ -156,10 +163,10 @@ struct EcsState {
         }
 
         foreach (vbuf, instanceCount; counts) {
-            renderer.issueRenderCommands(imageIndex, vbuf, instanceCount);
+            renderer.drawVertexBuffer(fid, vbuf, instanceCount);
         }
 
-        renderer.endCommandsForFrame(imageIndex);
+        renderer.endCommandsForFrame(fid);
     }
 
 
@@ -174,6 +181,8 @@ struct EcsState {
         foreach (e; ents) {
             vec3 accel = vec3(0);
 
+            import globals : MOVEMENT_IMPULSE;
+
             if (actionRequested[GameAction.MOVE_FORWARDS])  { accel.z += MOVEMENT_IMPULSE.forwards;  }
             if (actionRequested[GameAction.MOVE_BACKWARDS]) { accel.z += MOVEMENT_IMPULSE.backwards; }
             if (actionRequested[GameAction.MOVE_RIGHT])     { accel.x += MOVEMENT_IMPULSE.right;     }
@@ -187,14 +196,12 @@ struct EcsState {
     }
 }
 
-alias Entity = size_t;
 
 struct Frame {
-    /**
-        This is used as an index into the arrays in SwapchainWithDependents to
-        associate this frame with Vulkan state within the renderer.
-    */
-    uint imageIndex;
+    FrameId fid;
+
+    import shader_abi : Uniforms;
+    Uniforms uniformData;
 
     mat4 projection; /// Projection uniform
 
@@ -205,7 +212,7 @@ struct Frame {
 }
 
 
-Frame tick(Frame *previousFrame, ref Renderer renderer) {
+Frame tick(Frame *previousFrame, Renderer renderer) {
     import std.algorithm : map, fold, setIntersection, each;
 
     Frame thisFrame;
@@ -214,8 +221,7 @@ Frame tick(Frame *previousFrame, ref Renderer renderer) {
     thisFrame.ecs = previousFrame.ecs;
     thisFrame.actionRequested[] = false;
 
-    thisFrame.imageIndex = renderer.acquireImageIndex(
-        (previousFrame.imageIndex + 1) % globals.numSwapchainImages);
+    thisFrame.fid = renderer.acquireNextFrameId();
 
     glfwSetWindowUserPointer(globals.window, &thisFrame);
 
@@ -234,7 +240,7 @@ Frame tick(Frame *previousFrame, ref Renderer renderer) {
     thisFrame.ecs.updateViewMatrices();
     thisFrame.ecs.updatePlayerAcceleration(thisFrame.actionRequested);
     Uniforms ubo = thisFrame.ecs.updateUniforms(thisFrame.projection);
-    thisFrame.ecs.renderEntities(renderer, ubo, thisFrame.imageIndex);
+    thisFrame.ecs.renderEntities(renderer, ubo, thisFrame.fid);
 
     if (thisFrame.actionRequested[GameAction.QUIT_GAME]) {
         glfwSetWindowShouldClose(globals.window, GLFW_TRUE);
@@ -244,12 +250,15 @@ Frame tick(Frame *previousFrame, ref Renderer renderer) {
 }
 
 
+/**
+    Returns the indices into the given array for which the element is not null.
+*/
 Entity[] entitiesWithComponent(T)(T[] array) pure {
     import std.range     : iota;
     import std.algorithm : filter, map;
 
     auto indices = iota(0, array.length, 1);
-    auto ents = indices.filter!(i => !array[i].isNull);
+    auto ents = indices.filter!(i => array[i].isNull);
 
     Entity[] ret;
     ret.length = 1;
@@ -263,16 +272,25 @@ Entity[] entitiesWithComponent(T)(T[] array) pure {
 
     debug(ecs) {
         import std.experimental.logger : log;
-        log(" returning ", ret);
+        logf("%s returning %s", __FUNCTION__, ret);
     }
 
     return ret;
 }
 
 
+/// Unfortunately this isn't provided by GLFW and this is literally how they do
+/// their error checking internally.
+bool isValidGlfwKey(int key) pure nothrow @nogc {
+    return key >= GLFW_KEY_SPACE && key <= GLFW_KEY_LAST;
+}
+
+
 /// Returns the GameAction associated with this keyboard key.
 /// @key: should be a GLFW_KEY_* value.
-GameAction associatedAction(int key) pure nothrow @nogc {
+GameAction associatedAction(int key) pure nothrow @nogc
+    in (isValidGlfwKey(key))
+{
     switch (key) {
         case GLFW_KEY_W            : return GameAction.MOVE_FORWARDS;
         case GLFW_KEY_A            : return GameAction.MOVE_LEFT;

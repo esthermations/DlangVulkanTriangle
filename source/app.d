@@ -9,17 +9,18 @@ import gl3n.linalg;
 import util;
 static import globals;
 import game;
-import renderer;
+import renderer_interface;
+import shader_abi : Uniforms, Vertex;
 
 void main() {
 
-    import core.time;
+    debug logf("Each frame has %s bytes of data.", Frame.sizeof);
 
-    debug log("Got here!");
+    import core.time;
 
     Frame *initialFrame = new Frame;
 
-    initialFrame.imageIndex = 0;
+    initialFrame.fid = 0;
     initialFrame.projection = util.perspective(
         globals.verticalFieldOfView,
         globals.aspectRatio,
@@ -37,7 +38,7 @@ void main() {
         initialFrame.ecs.acceleration       [player] = vec3(0);
         initialFrame.ecs.controlledByPlayer [player] = true;
 
-        initialFrame.ecs.position           [camera] = vec3(0.0, 5.up, 5.backwards);
+        initialFrame.ecs.position           [camera] = vec3(0.0, 5.up, 5.forwards);
         initialFrame.ecs.lookAtTargetEntity [camera] = player;
     }
 
@@ -70,43 +71,27 @@ void main() {
 
     Renderer renderer;
 
-    import std.string : toStringz;
+    version (Vulkan) {
+        import renderer_vulkan : VulkanRenderer;
+        renderer = new VulkanRenderer;
+    }
 
-    const(char)*[] requiredLayers = [
-        "VK_LAYER_KHRONOS_validation".toStringz
-    ];
+    assert(renderer);
 
-    const(char)*[] requiredDeviceExtensions = [
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        VK_KHR_MAINTENANCE1_EXTENSION_NAME
-    ];
-
-    const(char)*[] requiredInstanceExtensions = [
-        VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
-    ];
-
-    VkApplicationInfo appInfo = {
-        pApplicationName : "Hello Triangle",
-        apiVersion       : VK_MAKE_VERSION(1, 1, 0),
-    };
-
-    renderer.initialise(
-        appInfo,
-        requiredLayers,
-        requiredInstanceExtensions,
-        requiredDeviceExtensions,
-    );
-
-    debug log("Finished initialising renderer!");
+    {
+        renderer.initWindow("Hello, World!", Uniforms.sizeof, Vertex.sizeof);
+        debug log("Finished initialising renderer!");
+    }
 
     // Import some 3D models
 
     Vertex[] vertices;
 
     {
-        import obj;
+        import obj : ObjData, parseObj;
         ObjData model = parseObj("./models/Barrel02.obj");
         vertices.length = model.positions.length;
+
         foreach (i; 0 .. vertices.length) {
             vertices[i].position = model.positions[i];
             vertices[i].normal   = model.normals[i];
@@ -115,14 +100,9 @@ void main() {
 
     // Create vertex buffer using those vertices
 
-    auto barrelVertexBuffer = renderer.createBuffer!Vertex(
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
-        vertices.length,
-    );
+    Renderer.Buffer barrelVertexBuffer = renderer.createVertexBuffer(vertices.sizeof);
+    renderer.setData(initialFrame.fid, barrelVertexBuffer, cast(ubyte[]) vertices);
 
-    renderer.setBufferData(barrelVertexBuffer, vertices);
     initialFrame.ecs.vertexBuffer[player] = barrelVertexBuffer;
 
     foreach (i; 0 .. 990) {
@@ -147,24 +127,20 @@ void main() {
 
 
     Frame[] framesInFlight;
-    framesInFlight.length = globals.numSwapchainImages;
+    framesInFlight.length = globals.maxFramesInFlight;
 
     size_t currFrame = 0;
     framesInFlight[currFrame] = game.tick(initialFrame, renderer);
 
-    import core.thread.osthread;
-
     while (!glfwWindowShouldClose(globals.window)) {
-
-        renderer.render(framesInFlight[currFrame]);
+        renderer.render(framesInFlight[currFrame].fid);
         framesInFlight[currFrame] = game.tick(&framesInFlight[currFrame], renderer);
 
-        debug log ("current frame image index is " ~ framesInFlight[currFrame].imageIndex.to!string);
+        debug logf("current frame image index is %s", framesInFlight[currFrame].fid);
 
         // Advance to the next Frame struct
         currFrame = (currFrame + 1) % framesInFlight.length;
-    } // End of main loop
+    }
 
-    renderer.cleanupBuffer!(Vertex)(barrelVertexBuffer);
-    renderer.cleanup();
+    debug log("Bye!");
 }

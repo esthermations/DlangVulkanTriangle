@@ -10,11 +10,30 @@ layout (binding = 0) uniform Uniforms {
     mat4 projection;
 } ubo;
 
+
+// These locations correspond to values in getVertexAttributeDescription().
 layout (location = 0) in  vec3 inPosition;
 layout (location = 1) in  vec3 inNormal;
+
 layout (location = 0) out vec3 outColour;
+
+
+uint getEntityId() {
+    /*
+        TODO:
+            - Sort entity data by vertex buffer
+            - Set a uniform before each instanced draw of each vbuf containing
+              the offset into the models[] array
+            - Add that to the instance ID to get the actual index into models[]
+    */
+    return gl_InstanceIndex;
+}
+
 
 void main() {
     outColour   = abs(inNormal);
-    gl_Position = ubo.projection * ubo.view * ubo.models[gl_InstanceIndex] * vec4(inPosition, 1.0);
+    gl_Position = ubo.projection
+                * ubo.view
+                * ubo.models[getEntityId()]
+                * vec4(inPosition, 1.0);
 }

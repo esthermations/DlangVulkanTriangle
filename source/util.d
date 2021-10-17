@@ -9,13 +9,13 @@ void printMatrix(mat4 mat, bool rowMajor = true) {
         writeln();
     }
 }
-    
+
 /**
     Utility functions for the game engine, currently mostly Vulkan-related.
 */
 
-enum Y_UP        = +1.0f; 
-enum Y_DOWN      = -Y_UP; 
+enum Y_UP        = +1.0f;
+enum Y_DOWN      = -Y_UP;
 enum X_LEFT      = -1.0f;
 enum X_RIGHT     = -X_LEFT;
 enum Z_BACKWARDS = +1.0f;
@@ -88,11 +88,11 @@ mat4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
         -dot(cameraPosition, forward),
         1.0,
     );
-} 
+}
 
 unittest {
     immutable view = lookAt(vec3(2.0, 2.0, 2.0), vec3(0, 0, 0), vec3(0, 0, 1));
-    immutable expected = mat4( 
+    immutable expected = mat4(
         -0.707, -0.408, +0.577, +0.000,
         +0.707, -0.408, +0.577, +0.000,
         +0.000, +0.816, +0.577, +0.000,
@@ -115,7 +115,7 @@ unittest {
 /// Don't use this one. Use the one that takes fovDegrees, below. This is
 /// correct but not really user-friendly.
 mat4 perspective(float top, float bottom, float left, float right, float near, float far) pure @nogc nothrow {
-    immutable dx = right - left;    
+    immutable dx = right - left;
     immutable dy = top - bottom;
     immutable dz = far - near;
 

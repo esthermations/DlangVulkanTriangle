@@ -1,4 +1,6 @@
-module renderer;
+module renderer_vulkan;
+
+import renderer_interface;
 
 import std.stdio;
 import std.exception : enforce;
@@ -11,66 +13,20 @@ import erupted;
 import erupted.vulkan_lib_loader;
 
 static import globals;
-import game;
+import game : Frame;
 
 // Extension function pointers -- these need to be loaded before called
 PFN_vkCreateDebugUtilsMessengerEXT  vkCreateDebugUtilsMessengerEXT;
 PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
 
-// Buffer types
 
-alias VertexBuffer  = Renderer.Buffer!Vertex;
-alias UniformBuffer = Renderer.Buffer!Uniforms;
-
-struct Uniforms {
-    // Ensure this is equal to the one defined in shader.vert
-    enum MAX_MODEL_UNIFORMS = 1000;
-
-    mat4[MAX_MODEL_UNIFORMS] models;
-    mat4                     view;
-    mat4                     projection;
-}
-
-struct Vertex {
-    // Ensure updates here are reflected in Vertex.getAttributeDescription
-    vec3 position; /// Model-space position of this vertex
-    vec3 normal;   /// Vertex normal vector
-
-    static auto getBindingDescription() {
-        VkVertexInputBindingDescription ret = {
-            binding   : 0,
-            stride    : Vertex.sizeof,
-            inputRate : VK_VERTEX_INPUT_RATE_VERTEX,
-        };
-        return ret;
-    }
-
-    static auto getAttributeDescription() {
-        VkVertexInputAttributeDescription[2] ret = [
-            {
-                binding : 0,
-                location : 0,
-                format   : VK_FORMAT_R32G32B32_SFLOAT,
-                offset   : Vertex.position.offsetof,
-            },
-            {
-                binding  : 0,
-                location : 1,
-                format   : VK_FORMAT_R32G32B32_SFLOAT,
-                offset   : Vertex.normal.offsetof,
-            }
-        ];
-        return ret;
-    }
-}
-
-struct Renderer {
+final class VulkanRenderer : Renderer {
 
     /*
-    ---------------------------------------------------------------------------
-    --  State
-    ---------------------------------------------------------------------------
+        State
     */
+
+private:
 
     VkInstance       instance;
     VkSurfaceKHR     surface;
@@ -87,39 +43,46 @@ struct Renderer {
     VkCommandPool           commandPool;
     SwapchainWithDependents swapchain;
 
+    size_t uniformDataSize;
+    size_t vertexSize;
+
     /*
-    ---------------------------------------------------------------------------
-    --  Functions
-    ---------------------------------------------------------------------------
+        Renderer interface implementation
     */
 
-    /// Render (present) the given frame.
-    void render(Frame frame) {
+public:
+
+    override void render(FrameId fid) {
         VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
         VkSubmitInfo submitInfo = {
             waitSemaphoreCount   : 1,
             // This semaphore should already be signalled because
             // acquireImageIndex waits for it.
-            pWaitSemaphores      : &this.swapchain.imageAvailableSemaphores[frame.imageIndex],
+            pWaitSemaphores      : &this.swapchain.imageAvailableSemaphores[fid],
             pWaitDstStageMask    : &waitStages,
             signalSemaphoreCount : 1,
-            pSignalSemaphores    : &this.swapchain.renderFinishedSemaphores[frame.imageIndex],
+            pSignalSemaphores    : &this.swapchain.renderFinishedSemaphores[fid],
             commandBufferCount   : 1,
-            pCommandBuffers      : &this.swapchain.commandBuffers[frame.imageIndex],
+            pCommandBuffers      : &this.swapchain.commandBuffers[fid],
         };
 
         {
-            auto errors = vkQueueSubmit(this.graphicsQueue, 1, &submitInfo, this.swapchain.commandBufferReadyFences[frame.imageIndex]);
+            auto errors = vkQueueSubmit(
+                this.graphicsQueue,
+                1,
+                &submitInfo,
+                this.swapchain.commandBufferReadyFences[fid]
+            );
             enforce(!errors);
         }
 
         VkPresentInfoKHR presentInfo = {
             waitSemaphoreCount : 1,
-            pWaitSemaphores    : &this.swapchain.renderFinishedSemaphores[frame.imageIndex],
+            pWaitSemaphores    : &this.swapchain.renderFinishedSemaphores[fid],
             swapchainCount     : 1,
             pSwapchains        : &this.swapchain.swapchain,
-            pImageIndices      : &frame.imageIndex,
+            pImageIndices      : &fid,
             pResults           : null,
         };
 
@@ -137,45 +100,20 @@ struct Renderer {
             queuePresentResult == VK_SUBOPTIMAL_KHR ||
             globals.windowWasResized)
         {
-            debug log("Recreating swapchain.");
+            debug log("Recreating swapchain. FIXME: This may cause getFrameState() for other frames to return unexpected results.");
             globals.windowWasResized = false;
-            this.swapchain = recreateSwapchainWithDependents();
-        }
-    } // end render()
-
-    /// Will our Vulkan instance support all the provided layers?
-    bool haveAllRequiredLayers(const(char)*[] requiredLayers) {
-        uint layerCount;
-        vkEnumerateInstanceLayerProperties(&layerCount, null);
-        enforce(layerCount > 0, "No layers available? This is weird.");
-
-        VkLayerProperties[] availableLayers;
-        availableLayers.length = layerCount;
-        vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.ptr);
-
-        uint numRequiredLayersFound = 0;
-
-        foreach (requiredLayer; requiredLayers) {
-            foreach (layer; availableLayers) {
-                immutable string layerName = layer.layerName.idup;
-                import core.stdc.string : strcmp;
-
-                if (strcmp(requiredLayer, layerName.ptr) == 0) {
-                    ++numRequiredLayersFound;
-                    break;
-                }
-            }
+            this.swapchain = recreateSwapchainWithDependents!UniformDataT();
         }
 
-        return numRequiredLayersFound == requiredLayers.length;
+        this.swapchain.frameState[fid] = Renderer.FrameState.SUBMITTED;
     }
 
-    /// Initialise the renderer state, ready to render buffers!
-    void initialise(VkApplicationInfo appInfo,
-                    const(char)*[] requiredLayers,
-                    const(char)*[] requiredInstanceExtensions,
-                    const(char)*[] requiredDeviceExtensions)
-    {
+
+    override void initWindow(string windowName, size_t uniformDataSize, size_t vertexSize) {
+
+        this.uniformDataSize = uniformDataSize;
+        this.vertexSize = vertexSize;
+
         // Load initial set of Vulkan functions
 
         {
@@ -183,10 +121,31 @@ struct Renderer {
             enforce(vulkanLoadedOkay, "Failed to load Vulkan functions!");
         }
 
+        // Ensure we have required layers
+        import std.string : toStringz;
+
+        const(char)*[] requiredLayers = [
+            "VK_LAYER_KHRONOS_validation".toStringz
+        ];
+
         enforce(haveAllRequiredLayers(requiredLayers));
         debug log("We have all required extensions!");
 
-        // Glfw Extensions
+        VkApplicationInfo appInfo = {
+            pApplicationName : windowName.toStringz,
+            apiVersion       : VK_MAKE_VERSION(1, 1, 0),
+        };
+
+        const(char)*[] requiredDeviceExtensions = [
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+            VK_KHR_MAINTENANCE1_EXTENSION_NAME
+        ];
+
+        const(char)*[] requiredInstanceExtensions = [
+            VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+        ];
+
+        // Add glfw extensions
 
         {
             uint count;
@@ -208,11 +167,11 @@ struct Renderer {
                 ppEnabledLayerNames     : requiredLayers.ptr,
             };
 
-            auto errors = vkCreateInstance(&createInfo, null, &instance);
+            auto errors = vkCreateInstance(&createInfo, null, &this.instance);
             enforce(!errors, "Failed to create VkInstance!");
         }
 
-        loadInstanceLevelFunctions(instance);
+        loadInstanceLevelFunctions(this.instance);
         debug log("Instance created, and instance-level functions loaded!");
 
         // Set up debug messenger
@@ -336,10 +295,191 @@ struct Renderer {
         }
 
         // Create swapchain
-
         this.swapchain = createSwapchainWithDependents();
+    }
 
-    } // end init()
+
+    override bool rendererIsInitialised() const {
+        return this.logicalDevice != VK_NULL_HANDLE
+            && this.physicalDevice != VK_NULL_HANDLE
+            && this.swapchain.isValid()
+            ;
+    }
+
+
+    override uint numFrameIds() const {
+        return this.swapchain.numImages();
+    }
+
+
+    override FrameId acquireNextFrameId() {
+        static FrameId nextFid = 0;
+        FrameId fid = nextFid;
+
+        VkResult errors = vkAcquireNextImageKHR
+            (this.logicalDevice,
+             this.swapchain.swapchain,
+             ulong.max, // timeout (ns)
+             this.swapchain.imageAvailableSemaphores[nextFid],
+             VK_NULL_HANDLE, // fence
+             &fid
+        );
+        enforce(!errors);
+
+        nextFid = (nextFid + 1) % this.numFrameIds();
+
+        return fid;
+    }
+
+
+    override Buffer createVertexBuffer(size_t sizeInBytes) {
+        VulkanVertexBuffer b;
+        b.create(
+            sizeInBytes,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        );
+        return b;
+    }
+
+
+    override void setData(FrameId fid, Buffer buf, ubyte[] data) {
+        auto vkBuf = cast(VulkanBuffer) buf;
+
+        void *dst;
+        vkMapMemory(vkBuf.device, vkBuf.memory, 0, vkBuf.size, 0, &dst);
+        {
+            import core.stdc.string : memcpy;
+            memcpy(dst, data.ptr, (data.length * DataT.sizeof));
+        }
+        vkUnmapMemory(vkBuf.device, vkBuf.memory);
+    }
+
+
+    override void drawVertexBuffer(FrameId fid, Buffer vbuf, uint numInstances) {
+        VkBuffer    [1] buffers = [(cast(VulkanBuffer) vbuf).buffer];
+        VkDeviceSize[1] offsets = [0];
+
+        auto cb = this.outer.swapchain.commandBuffers[fid];
+        vkCmdBindVertexBuffers(cb, 0, 1, buffers.ptr, offsets.ptr);
+        vkCmdDraw             (cb, buffer.elementCount(), numInstances, 0, 0);
+    }
+
+
+    override FrameState getFrameState(FrameId fid) const {
+        return swapchain.frameState[fid];
+    }
+
+
+    override void beginCommandsForFrame(FrameId fid, ubyte[] uniformData) {
+        auto cb = this.swapchain.commandBuffers[fid];
+
+        // Reset the command buffer, putting it in the Initial state
+        vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);
+
+        // Begin the command buffer, putting it in the Recording state
+        VkCommandBufferBeginInfo beginInfo = {
+            flags : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+
+        vkBeginCommandBuffer(cb, &beginInfo);
+
+        // Update uniforms
+        vkCmdUpdateBuffer(
+            this.swapchain.commandBuffers[fid],
+            this.swapchain.uniformBuffers[fid].buffer,
+            0,
+            uniformData.sizeof,
+            uniformData.ptr
+        );
+
+        // Start a render pass
+        VkRenderPassBeginInfo info = {
+            renderPass  : this.swapchain.renderPass,
+            framebuffer : this.swapchain.framebuffers[fid],
+            renderArea  : {
+                offset : {0, 0},
+                extent : this.getSurfaceExtent(),
+            },
+            clearValueCount : cast(uint) globals.clearValues.length,
+            pClearValues    : globals.clearValues.ptr,
+        };
+
+        vkCmdBeginRenderPass   (cb, &info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline      (cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                this.swapchain.pipeline);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                this.pipelineLayout, 0, 1,
+                                &this.swapchain.descriptorSets[fid], 0,
+                                null);
+
+        this.swapchain.isRecording[fid] = true;
+    }
+
+
+    override void endCommandsForFrame(FrameId fid) {
+        auto cb = this.swapchain.commandBuffers[fid];
+        vkCmdEndRenderPass(cb);
+        auto errors = vkEndCommandBuffer(cb);
+        enforce(!errors);
+        this.swapchain.frameState[fid] = Renderer.FrameState.FINISHED_RECORDING;
+    }
+
+
+    override void awaitFrameCompletion(FrameId fid) {
+        // Wait for the command buffer to be ready (signalled by vkQueueSubmit)
+        vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFences[fid], false, ulong.max);
+        // Reset the fence for next time
+        vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFences[fid]);
+        this.swapchain.frameState[fid] = Renderer.FrameState.INITIAL;
+    }
+
+    /*
+        Vulkan-specific utility functions
+    */
+
+private:
+
+
+    VulkanBuffer createUniformBuffer(size_t sizeInBytes) {
+        VulkanBuffer b;
+        b.create(
+            sizeInBytes,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        );
+        return b;
+    }
+
+
+
+    /// Will our Vulkan instance support all the provided layers?
+    bool haveAllRequiredLayers(const(char)*[] requiredLayers) {
+        uint layerCount;
+        vkEnumerateInstanceLayerProperties(&layerCount, null);
+        enforce(layerCount > 0, "No layers available? This is weird.");
+
+        VkLayerProperties[] availableLayers;
+        availableLayers.length = layerCount;
+        vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.ptr);
+
+        uint numRequiredLayersFound = 0;
+
+        foreach (requiredLayer; requiredLayers) {
+            foreach (layer; availableLayers) {
+                immutable string layerName = layer.layerName.idup;
+                import core.stdc.string : strcmp;
+
+                if (strcmp(requiredLayer, layerName.ptr) == 0) {
+                    ++numRequiredLayersFound;
+                    break;
+                }
+            }
+        }
+
+        return numRequiredLayersFound == requiredLayers.length;
+    }
+
 
     VkDebugUtilsMessengerEXT createDebugMessenger() {
         extern (Windows) VkBool32
@@ -418,11 +558,11 @@ struct Renderer {
         return swapchain;
     }
 
+
     VkImageView createImageView(VkDevice           logicalDevice,
                                 VkImage            image,
                                 VkFormat           format,
-                                VkImageAspectFlags aspectMask)
-    {
+                                VkImageAspectFlags aspectMask) {
         VkImageViewCreateInfo createInfo = {
             image      : image,
             viewType   : VK_IMAGE_VIEW_TYPE_2D,
@@ -448,6 +588,7 @@ struct Renderer {
 
         return ret;
     }
+
 
     VkImageView[] createImageViewsForSwapchain(VkSwapchainKHR swapchain) {
         // Images
@@ -475,6 +616,9 @@ struct Renderer {
         return ret;
     }
 
+
+    // TODO: Call this something better. It's all the Vulkan state that needs
+    // to change when the window is resized.
     struct SwapchainWithDependents {
         VkSwapchainKHR    swapchain;
         VkRenderPass      renderPass;
@@ -486,7 +630,7 @@ struct Renderer {
         VkImageView             []imageViews;
         VkFramebuffer           []framebuffers;
         VkDescriptorSet         []descriptorSets;
-        UniformBuffer           []uniformBuffers;
+        VulkanBuffer            []uniformBuffers;
         VkCommandBuffer         []commandBuffers;
 
         /// Signalled when the commandBuffer for this image can be submitted
@@ -496,6 +640,8 @@ struct Renderer {
         /// Signalled when the command buffer can be re-used
         VkFence                 []commandBufferReadyFences;
 
+        Renderer.FrameState     []frameState;
+
         invariant {
             assert(imageViews.length == framebuffers.length);
             assert(imageViews.length == descriptorSets.length);
@@ -504,26 +650,41 @@ struct Renderer {
             assert(imageViews.length == imageAvailableSemaphores.length);
             assert(imageViews.length == renderFinishedSemaphores.length);
             assert(imageViews.length == commandBufferReadyFences.length);
+            assert(imageViews.length == frameState.length);
         }
 
-        uint numImages() {
+
+        uint numImages() const {
             return cast(uint) imageViews.length;
         }
+
+
+        bool isValid() const {
+            // There may be a bit more to it than this, but it's a good start.
+            // Maybe ensure that every handle is unique?
+            import std.algorithm : all, uniq, equal;
+            return imageViews               .all!(h => h != VK_NULL_HANDLE)
+                && descriptorSets           .all!(h => h != VK_NULL_HANDLE)
+                && framebuffers             .all!(h => h != VK_NULL_HANDLE)
+                && descriptorSets           .all!(h => h != VK_NULL_HANDLE)
+                && commandBuffers           .all!(h => h != VK_NULL_HANDLE)
+                && imageAvailableSemaphores .all!(h => h != VK_NULL_HANDLE)
+                && renderFinishedSemaphores .all!(h => h != VK_NULL_HANDLE)
+                && commandBufferReadyFences .all!(h => h != VK_NULL_HANDLE)
+                ;
+        }
+
     }
 
-    void setUniformDataForFrame(uint imageIndex, Uniforms data) {
-        Uniforms[1] ubos = [data];
-        issueUpdateCommand(imageIndex, this.swapchain.uniformBuffers[imageIndex], ubos);
-    }
 
-    SwapchainWithDependents createSwapchainWithDependents() {
+    SwapchainWithDependents createSwapchainWithDependents(UniformDataT)() {
         SwapchainWithDependents ret;
 
         vkDeviceWaitIdle(logicalDevice);
 
         const colourFormat = getSurfaceFormat();
         const depthFormat  = getDepthFormat();
-        const extent = getSurfaceExtent();
+        const extent       = getSurfaceExtent();
 
         ret.swapchain      = this.createSwapchain();
         ret.imageViews     = this.createImageViewsForSwapchain(ret.swapchain);
@@ -534,19 +695,21 @@ struct Renderer {
         ret.pipeline                 = this.createGraphicsPipeline(ret.renderPass);
         ret.depthResources           = this.createDepthResources  ();
         ret.framebuffers             = this.createFramebuffers    (ret.imageViews, ret.depthResources.imageView, ret.renderPass);
-        ret.uniformBuffers           = this.createUniformBuffers  (numImages);
+        ret.uniformBuffers           = this.createUniformBuffers  (numImages, this.uniformDataSize);
         ret.descriptorPool           = this.createDescriptorPool  (numImages);
         ret.descriptorSets           = this.createDescriptorSets  (numImages, ret.descriptorPool, this.descriptorSetLayout, ret.uniformBuffers);
         ret.commandBuffers           = this.createCommandBuffers  (numImages);
         ret.imageAvailableSemaphores = this.createSemaphores      (numImages);
         ret.renderFinishedSemaphores = this.createSemaphores      (numImages);
         ret.commandBufferReadyFences = this.createFences          (numImages);
+        ret.frameState[]             = Renderer.FrameState.INITIAL;
 
         return ret;
     }
 
-    /// Clean up a swapchain and all its dependent items. There are a lot of them.
-    /// The commandPool and pipelineLayout are NOT destroyed.
+
+    /// Clean up a SwapchainWithDependents. The commandPool and pipelineLayout
+    /// are NOT destroyed.
     void cleanupSwapchainWithDependents() {
         vkDeviceWaitIdle(logicalDevice);
 
@@ -597,12 +760,12 @@ struct Renderer {
     }
 
 
-
-    SwapchainWithDependents recreateSwapchainWithDependents() {
+    SwapchainWithDependents recreateSwapchainWithDependents(UniformDataT)() {
         vkDeviceWaitIdle(this.logicalDevice);
         this.cleanupSwapchainWithDependents();
-        return createSwapchainWithDependents();
+        return createSwapchainWithDependents!UniformDataT();
     }
+
 
     VkFence[] createFences(uint count, VkFenceCreateFlags flags = 0) {
         VkFence[] ret;
@@ -613,13 +776,15 @@ struct Renderer {
         return ret;
     }
 
+
     VkFence createFence(VkFenceCreateFlags flags = 0) {
         VkFence ret;
-        VkFenceCreateInfo info = { flags : flags, };
+        VkFenceCreateInfo info = { flags : flags };
         auto errors = vkCreateFence(this.logicalDevice, &info, null, &ret);
         enforce(!errors);
         return ret;
     }
+
 
     /// Create the given number of semaphores using the Renderer's logical
     /// device
@@ -632,6 +797,7 @@ struct Renderer {
         return ret;
     }
 
+
     VkSemaphore createSemaphore() {
         VkSemaphore ret;
         VkSemaphoreCreateInfo info;
@@ -639,6 +805,7 @@ struct Renderer {
         enforce(!errors);
         return ret;
     }
+
 
     /// Create the given number of command buffers using the Renderer's current
     /// command pool.
@@ -659,11 +826,11 @@ struct Renderer {
         return ret;
     }
 
+
     /// Create a framebuffer for each provided vkImageView.
     VkFramebuffer[] createFramebuffers(VkImageView[] imageViews,
                                        VkImageView   depthImageView,
-                                       VkRenderPass  renderPass)
-    {
+                                       VkRenderPass  renderPass) {
         VkFramebuffer[] ret;
         ret.length = imageViews.length;
 
@@ -689,14 +856,16 @@ struct Renderer {
         return ret;
     }
 
+
     VkExtent2D getSurfaceExtent() {
         const support = querySwapchainSupport(this.physicalDevice);
         return selectExtent(globals.window, support.capabilities);
     }
 
+
     /// Set up the graphics pipeline for our application. There are a lot of
-    /// hardcoded properties about our pipeline in this function -- it's not nearly
-    /// as agnostic as it may appear.
+    /// hardcoded properties about our pipeline in this function -- it's not
+    /// nearly as agnostic as it may appear.
     VkPipeline createGraphicsPipeline(VkRenderPass renderPass) {
         VkShaderModule vertModule = createShaderModule(logicalDevice, "./source/vert.spv");
         VkShaderModule fragModule = createShaderModule(logicalDevice, "./source/frag.spv");
@@ -713,8 +882,8 @@ struct Renderer {
             pName  : "main",
         };
 
-        auto bindingDescription    = Vertex.getBindingDescription;
-        auto attributeDescriptions = Vertex.getAttributeDescription;
+        auto  bindingDescription    = getVertexBindingDescription();
+        const attributeDescriptions = getVertexAttributeDescription();
 
         VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {
             vertexBindingDescriptionCount   : 1,
@@ -728,10 +897,10 @@ struct Renderer {
             primitiveRestartEnable : VK_FALSE,
         };
 
-        auto extent = getSurfaceExtent();
+        const extent = getSurfaceExtent();
 
-        /// NOTE that our viewport is flipped upside-down so we can use Y-up,
-        /// where Vulkan normally uses Y-down.
+        // NOTE that our viewport is flipped upside-down so we can use Y-up,
+        // where Vulkan normally uses Y-down.
         VkViewport viewport = {
             x        : 0.0f,
             y        : extent.height,
@@ -822,13 +991,14 @@ struct Renderer {
         return ret;
     }
 
-    /// FIXME this should probably return a VkSurfaceFormatKHR.
+
+    // FIXME this should probably return a VkSurfaceFormatKHR.
     VkFormat getSurfaceFormat() {
         return selectSurfaceFormat(querySwapchainSupport(this.physicalDevice).formats).format;
     }
 
-    VkRenderPass createRenderPass(VkFormat colourFormat, VkFormat depthFormat) {
 
+    VkRenderPass createRenderPass(VkFormat colourFormat, VkFormat depthFormat) {
         VkAttachmentDescription colourAttachment = {
             flags          : 0,
             format         : colourFormat,
@@ -901,6 +1071,7 @@ struct Renderer {
         return ret;
     }
 
+
     struct QueueFamilies {
         Nullable!uint graphics;
         Nullable!uint present;
@@ -912,10 +1083,13 @@ struct Renderer {
         }
     }
 
-    /// Select queue families that meet our criteria, defined in this function.
-    /// The members of QueueFamilies are nullable -- this function may fail to
-    /// find all the queue families in that struct. If it can't find them, they
-    /// will be null.
+
+    /**
+        Select queue families that meet our criteria, defined in this function.
+        The members of QueueFamilies are nullable -- this function may fail to
+        find all the queue families in that struct. If it can't find them, they
+        will be null.
+    */
     QueueFamilies selectQueueFamilies(VkPhysicalDevice particularPhysicalDevice) {
         VkQueueFamilyProperties[] queueFamilies;
         uint queueFamilyCount;
@@ -968,10 +1142,10 @@ struct Renderer {
         return ret;
     }
 
+
     /// Is this device suitable for our purposes?
     bool isSuitable(VkPhysicalDevice particularPhysicalDevice,
-                    const(char)*[]   requiredDeviceExtensions)
-    {
+                    const(char)*[]   requiredDeviceExtensions) {
         // Confirm device is a discrete GPU
         VkPhysicalDeviceProperties deviceProperties;
         vkGetPhysicalDeviceProperties(particularPhysicalDevice, &deviceProperties);
@@ -1044,6 +1218,7 @@ struct Renderer {
         return true;
     }
 
+
     /// Select a physical device available in the instance based on whether it
     /// satisfies isSuitable().
     VkPhysicalDevice selectPhysicalDevice(const(char)*[] requiredDeviceExtensions) {
@@ -1067,11 +1242,13 @@ struct Renderer {
         return VK_NULL_HANDLE;
     }
 
+
     struct SwapchainSupportDetails {
         VkSurfaceCapabilitiesKHR   capabilities;
         VkSurfaceFormatKHR       []formats;
         VkPresentModeKHR         []presentModes;
     }
+
 
     SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice particularPhysicalDevice) {
         SwapchainSupportDetails ret;
@@ -1079,12 +1256,7 @@ struct Renderer {
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
             particularPhysicalDevice, this.surface, &ret.capabilities);
 
-        globals.numSwapchainImages = ret.capabilities.maxImageCount;
-
-        debug {
-            import std.conv : to;
-            log("Our swapchain has " ~ ret.capabilities.maxImageCount.to!string ~ " images");
-        }
+        debug logf("Our swapchain has %s images", ret.capabilities.maxImageCount);
 
         uint numFormats;
         vkGetPhysicalDeviceSurfaceFormatsKHR(
@@ -1107,6 +1279,7 @@ struct Renderer {
         return ret;
     }
 
+
     VkSurfaceFormatKHR selectSurfaceFormat(in VkSurfaceFormatKHR[] formats)
         in (formats.length != 0)
     {
@@ -1121,11 +1294,6 @@ struct Renderer {
         return formats[0];
     }
 
-    /**
-    -------------------------------------------------------------------------------
-    --  selectPresentMode
-    -------------------------------------------------------------------------------
-    */
 
     VkPresentModeKHR selectPresentMode(VkPresentModeKHR[] presentModes) {
         foreach (presentMode; presentModes) {
@@ -1138,6 +1306,7 @@ struct Renderer {
         // Fallback case -- FIFO is guaranteed to be available
         return VK_PRESENT_MODE_FIFO_KHR;
     }
+
 
     VkExtent2D selectExtent(   GLFWwindow              *window,
                             in VkSurfaceCapabilitiesKHR capabilities) {
@@ -1172,6 +1341,7 @@ struct Renderer {
         }
     }
 
+
     VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
         import std.stdio : File;
         auto file = File(path, "rb");
@@ -1190,189 +1360,86 @@ struct Renderer {
         return ret;
     }
 
-    /// Acquire the imageIndex for the next frame.
-    uint acquireImageIndex(uint desiredImageIndex) {
-        uint imageIndex;
-        auto errors = vkAcquireNextImageKHR(this.logicalDevice,
-                                            this.swapchain.swapchain,
-                                            ulong.max, // timeout (ns)
-                                            this.swapchain.imageAvailableSemaphores[desiredImageIndex],
-                                            VK_NULL_HANDLE, // fence
-                                            &imageIndex);
-        enforce(!errors);
-        assert(imageIndex == desiredImageIndex);
-        return imageIndex;
-    }
 
-    /*
-    ---------------------------------------------------------------------------
-    --  Buffers
-    ---------------------------------------------------------------------------
-    */
+    class VulkanBuffer : Buffer {
 
-
-    struct Buffer(DataT) {
+        VkDevice       device;
         VkBuffer       buffer;
         VkDeviceMemory memory;
-        ulong          size; /// The size in bytes of the buffer's storage
+        size_t         size; /// The size in bytes of the buffer's storage
 
-        /// How many elements of type DataT can this buffer hold?
-        uint elementCount() const {
-            return cast(uint) this.size / DataT.sizeof;
-        }
-    }
-
-    void cleanupBuffer(T)(Buffer!T buffer) {
-        vkDestroyBuffer(this.logicalDevice, buffer.buffer, null);
-        vkFreeMemory(this.logicalDevice, buffer.memory, null);
-    }
-
-    /// Create a buffer intended to hold numElements variables of type T.
-    /// T: The data type to be stored in the buffer.
-    /// numElements: How many T's the buffer should be able to hold.
-    Buffer!T createBuffer(T)(VkBufferUsageFlags    bufferUsage,
-                             VkMemoryPropertyFlags memoryProperties,
-                             ulong                 numElements = 1)
-    {
-        Buffer!T ret;
-        ret.size = numElements * T.sizeof;
-
-        // Create ret.buffer
-
+        void create(size_t sizeInBytes,
+                    VkBufferUsageFlags bufferUsage,
+                    VkMemoryPropertyFlags memoryProperties)
         {
-            VkBufferCreateInfo createInfo = {
-                size        : ret.size,
-                usage       : bufferUsage,
-                sharingMode : VK_SHARING_MODE_EXCLUSIVE,
+            Buffer!T ret;
+            ret.size = numElements * T.sizeof;
+
+            // Create ret.buffer
+
+            {
+                VkBufferCreateInfo createInfo = {
+                    size        : ret.size,
+                    usage       : bufferUsage,
+                    sharingMode : VK_SHARING_MODE_EXCLUSIVE,
+                };
+
+                auto errors = vkCreateBuffer(
+                    this.logicalDevice, &createInfo, null, &ret.buffer);
+                enforce(!errors, "Failed to create buffer!");
+            }
+
+            // Create ret.memory
+
+            VkMemoryRequirements memRequirements;
+            vkGetBufferMemoryRequirements(this.logicalDevice, ret.buffer, &memRequirements);
+
+            VkMemoryAllocateInfo allocInfo = {
+                allocationSize  : memRequirements.size,
+                memoryTypeIndex : findMemoryType(memRequirements.memoryTypeBits,
+                                                 memoryProperties),
             };
 
-            auto errors = vkCreateBuffer(
-                this.logicalDevice, &createInfo, null, &ret.buffer);
-            enforce(!errors, "Failed to create buffer!");
+            {
+                auto errors = vkAllocateMemory(
+                    this.logicalDevice, &allocInfo, null, &ret.memory);
+                enforce(!errors, "Failed to allocate buffer!");
+            }
+
+            {
+                auto errors = vkBindBufferMemory(
+                    this.logicalDevice, ret.buffer, ret.memory, 0);
+                enforce(!errors, "Failed to bind buffer");
+            }
+
+            return ret;
         }
 
-        // Create ret.memory
 
-        VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(this.logicalDevice, ret.buffer, &memRequirements);
-
-        VkMemoryAllocateInfo allocInfo = {
-            allocationSize  : memRequirements.size,
-            memoryTypeIndex : findMemoryType(memRequirements.memoryTypeBits,
-                                             memoryProperties),
-        };
-
-        {
-            auto errors = vkAllocateMemory(
-                this.logicalDevice, &allocInfo, null, &ret.memory);
-            enforce(!errors, "Failed to allocate buffer!");
+        /// Utility - how many elements are in this buffer assuming it contains
+        /// ElementT?
+        uint elementCount(ElementT)() const {
+            return sizeInBytes() /  ElementT.sizeof;
         }
 
-        {
-            auto errors = vkBindBufferMemory(
-                this.logicalDevice, ret.buffer, ret.memory, 0);
-            enforce(!errors, "Failed to bind buffer");
+
+        override uint sizeInBytes() const {
+            return cast(uint) this.size;
         }
 
-        return ret;
+
+        ~this() {
+            vkDestroyBuffer(this.device, this.buffer, null);
+            vkFreeMemory   (this.device, this.memory, null);
+        }
     }
 
-    /// Set the data in this buffer to the given value
-    void setBufferData(DataT)(Buffer!DataT buffer, DataT[] data) {
-        void *dst;
-        vkMapMemory(this.logicalDevice, buffer.memory, 0, buffer.size, 0, &dst);
-        import core.stdc.string : memcpy;
-        memcpy(dst, data.ptr, (data.length * DataT.sizeof));
-        vkUnmapMemory(this.logicalDevice, buffer.memory);
-    }
-
-    /// Issue a command to render the given number of instances of the given
-    /// vertex buffer.
-    void issueRenderCommands(DataT)(uint         imageIndex,
-                                    Buffer!DataT buffer,
-                                    uint         numInstances)
-    {
-        VkBuffer[1]     buffers = [buffer.buffer];
-        VkDeviceSize[1] offsets = [0];
-
-        auto cb = this.swapchain.commandBuffers[imageIndex];
-        vkCmdBindVertexBuffers(cb, 0, 1, buffers.ptr, offsets.ptr);
-        vkCmdDraw             (cb, buffer.elementCount(), numInstances, 0, 0);
-    }
-
-    /// Issue a command to update this buffer. NOTE: This cannot be performed
-    /// during a render pass, according to the Vulkan spec
-    void issueUpdateCommand(DataT)(uint         imageIndex,
-                                   Buffer!DataT buffer,
-                                   DataT[]      data)
-         in (data.length != 0)
-         in (data.length * DataT.sizeof <= buffer.size)
-         in (buffer.size < 65536) // vkspec pp. 832
-    {
-        immutable VkDeviceSize dataSize = (data.length * DataT.sizeof);
-        vkCmdUpdateBuffer(this.swapchain.commandBuffers[imageIndex], buffer.buffer, 0, dataSize, data.ptr);
-    }
-
-    /// Reset the command buffer for this frame, then move it to the Recording
-    /// state.
-    void beginCommandsForFrame(uint imageIndex, Uniforms uniformData) {
-        auto cb = this.swapchain.commandBuffers[imageIndex];
-
-        // Wait for the command buffer to be ready (signalled by vkQueueSubmit)
-        vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFences[imageIndex], false, ulong.max);
-        // Reset the fence for next time
-        vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFences[imageIndex]);
-        // Reset the command buffer, putting it in the Initial state
-        vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);
-        // Begin the command buffer, putting it in the Recording state
-        VkCommandBufferBeginInfo beginInfo = {
-            flags : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        };
-
-        vkBeginCommandBuffer(cb, &beginInfo);
-
-        // Send updated uniform data
-        Uniforms[1] ubo = [uniformData];
-        issueUpdateCommand(imageIndex, this.swapchain.uniformBuffers[imageIndex], ubo);
-
-        // Start a render pass
-        VkRenderPassBeginInfo info = {
-            renderPass  : this.swapchain.renderPass,
-            framebuffer : this.swapchain.framebuffers[imageIndex],
-            renderArea  : {
-                offset : {0, 0},
-                extent : this.getSurfaceExtent(),
-            },
-            clearValueCount : cast(uint) globals.clearValues.length,
-            pClearValues    : globals.clearValues.ptr,
-        };
-
-        vkCmdBeginRenderPass   (cb, &info, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline      (cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                this.swapchain.pipeline);
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                this.pipelineLayout, 0, 1,
-                                &this.swapchain.descriptorSets[imageIndex], 0,
-                                null);
-    }
-
-    /// Indicate that we are finished recording rendering commands for this
-    /// frame, and the command buffer may be submitted.
-    void endCommandsForFrame(uint imageIndex) {
-        auto cb = this.swapchain.commandBuffers[imageIndex];
-        vkCmdEndRenderPass(cb);
-        auto errors = vkEndCommandBuffer(cb);
-        enforce(!errors);
-    }
 
     /// Select a memory type that satisfies the requested properties.
     /// TODO: wtf does this actually do lmao document this better
-    uint findMemoryType(uint typeFilter,
-                        VkMemoryPropertyFlags requestedProperties)
-    {
+    uint findMemoryType(uint typeFilter, VkMemoryPropertyFlags requestedProperties) {
         VkPhysicalDeviceMemoryProperties memProperties;
-        vkGetPhysicalDeviceMemoryProperties(
-            this.physicalDevice, &memProperties);
+        vkGetPhysicalDeviceMemoryProperties(this.physicalDevice, &memProperties);
 
         foreach (uint i; 0 .. memProperties.memoryTypeCount) {
             immutable matchesFilter = typeFilter & (1 << i);
@@ -1389,6 +1456,7 @@ struct Renderer {
         enforce(false, "Failed to find a suitable memory type!");
         return 0;
     }
+
 
     VkDescriptorPool createDescriptorPool(uint numDescriptors) {
         VkDescriptorPoolSize poolSize = {
@@ -1411,15 +1479,18 @@ struct Renderer {
         return ret;
     }
 
+
     struct DepthResources {
         VkImage        image;
         VkImageView    imageView;
         VkDeviceMemory memory;
     }
 
+
     VkFormat getDepthFormat() {
         return VK_FORMAT_D16_UNORM;
     }
+
 
     DepthResources createDepthResources() {
         VkExtent2D extent = this.getSurfaceExtent();
@@ -1468,13 +1539,13 @@ struct Renderer {
         return ret;
     }
 
-    VkDescriptorSet[] createDescriptorSets
-        (uint count,
-         VkDescriptorPool      descriptorPool,
-         VkDescriptorSetLayout descriptorSetLayout,
-         UniformBuffer[]       uniformBuffers)
-    in  (uniformBuffers.length == count)
-    out (r; r.length == count)
+
+    VkDescriptorSet[] createDescriptorSets (uint                  count,
+                                            VkDescriptorPool      descriptorPool,
+                                            VkDescriptorSetLayout descriptorSetLayout,
+                                            VkBuffer[]            uniformBuffers)
+        in  (uniformBuffers.length == count)
+        out (r; r.length == count)
     {
         VkDescriptorSetLayout[] layouts;
         layouts.length = count;
@@ -1496,8 +1567,10 @@ struct Renderer {
         enforce(!errors, "Failed to allocate descriptor sets.");
 
         foreach (i, set; ret) {
+            import shader_abi : Uniforms;
+
             VkDescriptorBufferInfo bufferInfo = {
-                buffer : uniformBuffers[i].buffer,
+                buffer : uniformBuffers[i],
                 offset : 0,
                 range  : Uniforms.sizeof,
             };
@@ -1517,27 +1590,24 @@ struct Renderer {
         return ret;
     }
 
-    UniformBuffer[] createUniformBuffers(ulong count)
-    out (r; r.length == count)
+
+    VulkanBuffer[] createUniformBuffers(ulong count, size_t sizeInBytes)
+        out (r; r.length == count)
     {
-        UniformBuffer[] ret;
+        VulkanBuffer[] ret;
         ret.length = count;
 
         foreach (i; 0 .. ret.length) {
-            ret[i] = createBuffer!Uniforms(
-                ( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                  VK_BUFFER_USAGE_TRANSFER_DST_BIT   ),
-                ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT  |
-                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
-            );
+            ret[i] = createUniformBuffer(sizeInBytes);
         }
 
         return ret;
     }
 
+
     /// Clean up all Vulkan state, ready to shut down the application. Or recreate
     /// the entire Vulkan context. Or whatever.
-    void cleanup() {
+    ~this() {
         // Device-level
         cleanupSwapchainWithDependents ();
 
@@ -1551,4 +1621,41 @@ struct Renderer {
         vkDestroyInstance              (this.instance, null);
     }
 
-} // end struct Renderer
+
+} // end Renderer
+
+
+// Utility functions ...
+
+
+static auto getVertexBindingDescription() {
+    import shader_abi : Vertex;
+    VkVertexInputBindingDescription ret = {
+        binding   : 0,
+        stride    : Vertex.sizeof,
+        inputRate : VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    return ret;
+}
+
+
+static auto getVertexAttributeDescription() {
+    import shader_abi : Vertex;
+    VkVertexInputAttributeDescription[3] ret = [
+        {
+            binding  : 0,
+            location : 0,
+            format   : VK_FORMAT_R32G32B32_SFLOAT,
+            offset   : Vertex.position.offsetof,
+        },
+        {
+            binding  : 0,
+            location : 1,
+            format   : VK_FORMAT_R32G32B32_SFLOAT,
+            offset   : Vertex.normal.offsetof,
+        }
+    ];
+    return ret;
+}
+
+

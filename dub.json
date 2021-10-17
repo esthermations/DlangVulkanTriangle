@@ -15,6 +15,7 @@
 	"configurations": [
 		{
 			"name": "executable",
+			"versions": [ "Vulkan" ],
 			"targetType": "executable",
 			"preBuildCommands": ["powershell.exe -File ./compileShaders.ps1"]
 		}
