@@ -1,4 +1,6 @@
 import std.stdio;
+import std.concurrency : Tid, thisTid;
+
 import gl3n.linalg;
 
 void printMatrix(mat4 mat, bool rowMajor = true) {
@@ -9,13 +11,13 @@ void printMatrix(mat4 mat, bool rowMajor = true) {
         writeln();
     }
 }
-    
+
 /**
     Utility functions for the game engine, currently mostly Vulkan-related.
 */
 
-enum Y_UP        = +1.0f; 
-enum Y_DOWN      = -Y_UP; 
+enum Y_UP        = +1.0f;
+enum Y_DOWN      = -Y_UP;
 enum X_LEFT      = -1.0f;
 enum X_RIGHT     = -X_LEFT;
 enum Z_BACKWARDS = +1.0f;
@@ -88,11 +90,11 @@ mat4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up) {
         -dot(cameraPosition, forward),
         1.0,
     );
-} 
+}
 
 unittest {
     immutable view = lookAt(vec3(2.0, 2.0, 2.0), vec3(0, 0, 0), vec3(0, 0, 1));
-    immutable expected = mat4( 
+    immutable expected = mat4(
         -0.707, -0.408, +0.577, +0.000,
         +0.707, -0.408, +0.577, +0.000,
         +0.000, +0.816, +0.577, +0.000,
@@ -115,7 +117,7 @@ unittest {
 /// Don't use this one. Use the one that takes fovDegrees, below. This is
 /// correct but not really user-friendly.
 mat4 perspective(float top, float bottom, float left, float right, float near, float far) pure @nogc nothrow {
-    immutable dx = right - left;    
+    immutable dx = right - left;
     immutable dy = top - bottom;
     immutable dz = far - near;
 
@@ -129,9 +131,15 @@ mat4 perspective(float top, float bottom, float left, float right, float near, f
 }
 
 /// Converts degrees to radians.
-float toRadians(float degrees) pure @nogc nothrow {
+T toRadians(T)(T degrees) pure @nogc nothrow {
     import std.math : PI;
     return (PI / 180.0) * degrees;
+}
+
+
+T toDegrees(T)(T radians) pure @nogc nothrow {
+    import std.math : PI;
+    return (180.0 / PI) * radians;
 }
 
 /// Calculate a projection matrix using the given fov, aspect ratio, and near
@@ -167,7 +175,7 @@ enum AnsiColour {
     MAGENTA = "\033[1;35m",
     CYAN    = "\033[1;36m",
     DEFAULT = "\033[39;49m",
-};
+}
 
 string yellow (string s) { return AnsiColour.YELLOW  ~ s ~ AnsiColour.DEFAULT; }
 string green  (string s) { return AnsiColour.GREEN   ~ s ~ AnsiColour.DEFAULT; }
@@ -175,3 +183,85 @@ string red    (string s) { return AnsiColour.RED     ~ s ~ AnsiColour.DEFAULT; }
 string cyan   (string s) { return AnsiColour.CYAN    ~ s ~ AnsiColour.DEFAULT; }
 string blue   (string s) { return AnsiColour.BLUE    ~ s ~ AnsiColour.DEFAULT; }
 string magenta(string s) { return AnsiColour.MAGENTA ~ s ~ AnsiColour.DEFAULT; }
+
+void log(AnsiColour colour = AnsiColour.DEFAULT, ArgTypes...)( ArgTypes args)
+{
+    static import globals;
+    stderr.writeln("Frame ", globals.frameNumber, ": ", args);
+}
+
+
+void check(alias func, ArgTypes...)(
+    auto ref ArgTypes args,
+    // Grabbing the callsite information...
+    string callsiteFunction = __FUNCTION__,
+    string callsiteFile = __FILE__,
+    string callsitePrettyFunction = __PRETTY_FUNCTION__,
+    string callsiteModule = __MODULE__,
+    int    callsiteLine = __LINE__
+)
+{
+    enum functionName = __traits(identifier, func);
+    auto errors = func(args);
+    debug log(functionName, " -> ", errors, " @ ", callsiteModule, ":", callsiteLine);
+    assert(!errors, "Non-success return code from Vulkan call: " ~ functionName);
+}
+
+auto ref logWhileDoing(alias func, ArgTypes...)(
+    auto ref ArgTypes args,
+    // Grabbing the callsite information...
+    string callsiteFunction = __FUNCTION__,
+    string callsiteFile = __FILE__,
+    string callsitePrettyFunction = __PRETTY_FUNCTION__,
+    string callsiteModule = __MODULE__,
+    int    callsiteLine = __LINE__
+)
+{
+    enum functionName = __traits(identifier, func);
+    debug log("Doing: ", functionName, " @ ", callsiteModule, ":", callsiteLine);
+
+    static if (!__traits(isSame, typeof(func(args)), void)) {
+        return func(args);
+    }
+    else {
+        func(args);
+    }
+}
+
+
+import std.range.primitives : isInputRange, isInfinite;
+bool containsDuplicates(T)(T sequence)
+    if (isInputRange!T && !isInfinite!T)
+{
+    import std.algorithm : uniq;
+    import std.range     : walkLength;
+
+    auto s = sequence;
+    auto u = sequence.uniq;
+    auto sl = s.walkLength;
+    auto ul = u.walkLength;
+
+    log(__FUNCTION__, " : Sequence of length ", sl, " : ", s);
+    log(__FUNCTION__, " : Unique   of length ", ul, " : ", u);
+
+    return sl == ul;
+}
+
+unittest { assert( [1, 1, 2, 3].containsDuplicates); }
+unittest { assert(![1, 2, 3].containsDuplicates); }
+
+unittest
+{
+    struct Thing { int x, y; }
+    Thing[] things;
+    foreach (i; 0 .. 100) {
+        things ~= Thing(i, 100);
+    }
+    assert(!things.containsDuplicates);
+}
+
+bool runningOnMainThread(Tid callsiteTid = thisTid())
+{
+    static import globals;
+    return callsiteTid == globals.mainThreadTid;
+}

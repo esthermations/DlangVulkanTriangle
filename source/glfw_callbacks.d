@@ -1,10 +1,9 @@
 module glfw_callbacks;
 
-import std.experimental.logger;
-
 import glfw3.api;
 static import globals;
 import game;
+import util : log;
 
 extern (C) nothrow @nogc:
 
@@ -14,14 +13,14 @@ void keyPressed(GLFWwindow *window, int key, int scancode, int keyAction, int) {
 
     if (gameAction == GameAction.NO_ACTION) {
         import std.string : fromStringz;
-        debug log("User pressed unbound key ", 
+        debug log("User pressed unbound key ",
                   glfwGetKeyName(key, scancode).fromStringz);
         return;
     }
 
     // Otherwise, key is bound
 
-    auto actionIsDesired = (keyAction == GLFW_PRESS || 
+    auto actionIsDesired = (keyAction == GLFW_PRESS ||
                             keyAction == GLFW_REPEAT);
 
     Frame *frame = cast(Frame *) glfwGetWindowUserPointer(globals.window);
@@ -42,9 +41,9 @@ void framebufferResized(GLFWwindow *window, int width, int height) {
 
     Frame *frame = cast(Frame *) glfwGetWindowUserPointer(window);
     import util;
-    frame.projection = util.perspective(globals.verticalFieldOfView, 
+    frame.projection = util.perspective(globals.verticalFieldOfView,
                                         globals.aspectRatio,
-                                        globals.nearPlane, 
+                                        globals.nearPlane,
                                         globals.farPlane);
 }
 

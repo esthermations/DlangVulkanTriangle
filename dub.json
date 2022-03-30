@@ -2,12 +2,13 @@
 	"authors": [
 		"Esther O'Keefe"
 	],
-	"copyright": "Copyright © 2020, Esther O'Keefe",
+	"copyright": "Copyright © 2022, Esther O'Keefe",
 	"dependencies": {
-		"glfw-d": "~>1.0.1",
+		"glfw-d": "~>1.1.0",
 		"erupted": "~>2.1.9",
-		"gl3n": "~>1.3.1",
-		"mir-algorithm": "~>2.0.0"
+		"gl3n": "~>1.4.1",
+		"mir-algorithm": "~>2.0.0",
+		"unit-threaded": "*"
 	},
 	"description": "Rendering a triangle in D with Vulkan",
 	"license": "GPL-3.0",
@@ -16,7 +17,15 @@
 		{
 			"name": "executable",
 			"targetType": "executable",
-			"preBuildCommands": ["sh ./compileShaders.sh"]
+			"mainSourceFile": "source/app.d",
+			"preBuildCommands": ["sh ./compileShaders.sh"],
+			"buildOptions": ["debugInfoC", "debugMode"]
+		},
+		{
+			"name": "unittest",
+			"targetType": "executable",
+			"mainSourceFile": "source/tests.d",
+			"excludedSourceFiles": ["src/app.d"]
 		}
 	]
 }

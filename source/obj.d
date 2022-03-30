@@ -4,9 +4,10 @@ module obj;
     Parser for Wavefront OBJ files.
 */
 
-import std.experimental.logger;
 import std.exception : enforce;
 import gl3n.linalg;
+
+import util : log;
 
 struct ObjData {
     vec3[] positions;

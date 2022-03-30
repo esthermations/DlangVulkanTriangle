@@ -6,7 +6,7 @@ import std.exception   : enforce;
 import std.parallelism : parallel;
 
 import glfw3.api;
-import gl3n.linalg; 
+import gl3n.linalg;
 import erupted;
 static import globals;
 
@@ -27,76 +27,50 @@ enum GameAction {
 
 enum MOVEMENT_IMPULSE = 0.001;
 
+// Let's declare some units...
+static import units;
+alias Scale = units.Scale!float;
+alias Angle = units.Angle!float;
+
+struct Entity {
+    uint id; alias id this; static assert(Entity.sizeof == id.sizeof);
+
+    static Entity create() {
+        static uint nextId = 0;
+        return Entity(nextId++);
+    }
+}
+
+
 struct Frame {
 
     /// An index into the Vulkan swapchain corresponding to the image this frame
     /// will be rendered into.
-    uint imageIndex; 
+    uint imageIndex;
 
     mat4 projection; /// Projection uniform
 
-    // Components
-
-    Nullable!vec3         []position;
-    Nullable!vec3         []velocity;
-    Nullable!vec3         []acceleration;
-    Nullable!uint         []lookAtTargetEntity;
-    Nullable!bool         []controlledByPlayer;
-    Nullable!float        []scale;
-    Nullable!mat4         []modelMatrix;
-    Nullable!mat4         []viewMatrix;
-    Nullable!VertexBuffer []vertexBuffer;
-
-    /// How many entities exist in this frame?
-    auto numEntities() immutable {
-        return position.length;
-    }
-
-    invariant {
-        assert(position.length == position.length);
-        assert(position.length == velocity.length);
-        assert(position.length == acceleration.length);
-        assert(position.length == lookAtTargetEntity.length);
-        assert(position.length == controlledByPlayer.length);
-        assert(position.length == scale.length);
-        assert(position.length == modelMatrix.length);
-        assert(position.length == viewMatrix.length);
-        assert(position.length == vertexBuffer.length);
-
-        assert(scale.filter!(s => !s.isNull).all!(s => s >= 0.0));
-    }
-
-    // Entities
-
-    uint createEntity()
-        out (ret; this.position.length == ret + 1)
-    {
-        static uint nextEntityID = 0;
-
-        immutable newLength = 1 + nextEntityID;
-
-        this.position.length           = newLength;
-        this.velocity.length           = newLength;
-        this.acceleration.length       = newLength;
-        this.scale.length              = newLength;
-        this.viewMatrix.length         = newLength;
-        this.lookAtTargetEntity.length = newLength;
-        this.controlledByPlayer.length = newLength;
-        this.modelMatrix.length        = newLength;
-        this.vertexBuffer.length       = newLength;
-
-        return nextEntityID++;
-    }
-
-    // Player input
-
     /// Has the player requested the specified action this frame?
     bool[GameAction.max + 1] actionRequested = [false];
+
+    // Components
+    vec3         [Entity] position;
+    vec3         [Entity] velocity;
+    vec3         [Entity] acceleration;
+    Entity       [Entity] lookAtTargetEntity;
+    bool         [Entity] controlledByPlayer;
+    Scale        [Entity] scale;
+    Angle        [Entity] rotation;
+    mat4         [Entity] modelMatrix;
+    mat4         [Entity] viewMatrix;
+    VertexBuffer [Entity] vertexBuffer;
 }
+
 
 Frame tick(Frame previousFrame, ref Renderer renderer) {
     import std.algorithm : map, fold, setIntersection, each;
-    import std.experimental.logger;
+
+    debug log("Tick for frame ", globals.frameNumber);
 
     Frame thisFrame = {
         projection         : previousFrame.projection,
@@ -158,8 +132,8 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         debug(ecs) log(ents);
 
         foreach (e; ents.parallel) {
-            auto scale    = thisFrame.scale[e].get;
-            auto position = thisFrame.position[e].get;
+            auto scale    = thisFrame.scale[e];
+            auto position = thisFrame.position[e];
             thisFrame.modelMatrix[e] = mat4.identity.scale(scale, scale, scale)
                                                     .translate(position)
                                                     .transposed();
@@ -172,11 +146,18 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         auto lookAtEnts = entitiesWithComponent(thisFrame.lookAtTargetEntity);
         auto posEnts    = entitiesWithComponent(thisFrame.position);
         auto cameras    = setIntersection(lookAtEnts, posEnts);
-        debug(ecs) log(cameras);
+
+        debug(ecs) {
+            log("Entities with lookAt target: ", lookAtEnts);
+            import std.algorithm : sort;
+            log("Entities with position: ", posEnts.sort);
+            log("Cameras (intersection of the above):", cameras);
+        }
+
         foreach (e; cameras) {
-            vec3 eyePos = thisFrame.position[e].get();
-            uint targetEntity = thisFrame.lookAtTargetEntity[e].get();
-            vec3 targetPos    = thisFrame.position[targetEntity].get();
+            vec3 eyePos         = thisFrame.position[e];
+            Entity targetEntity = thisFrame.lookAtTargetEntity[e];
+            vec3 targetPos      = thisFrame.position[targetEntity];
             thisFrame.viewMatrix[e] = lookAt(eyePos, targetPos, vec3(0, 1.up, 0));
         }
     }
@@ -188,19 +169,20 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         // camera) will have a view matrix. Or at least, if there are multiple
         // view matrices, we're always using the first one.
         auto viewMatrixEnts = entitiesWithComponent(thisFrame.viewMatrix);
-        auto viewMatrix = thisFrame.viewMatrix[viewMatrixEnts.front].get;
-        debug(ecs) log("Camera entity is: ", viewMatrixEnts.front);
+        debug log("There are ", viewMatrixEnts.length, " entities with a view matrix.");
+        assert(viewMatrixEnts.length == 1, "No entities with a view matrix. Where is the camera?");
+        auto viewMatrix = thisFrame.viewMatrix[viewMatrixEnts[0]];
+        debug log("Camera entity is: ", viewMatrixEnts.front);
 
-        Uniforms uniformData = {
-            projection : thisFrame.projection,
-            view       : viewMatrix,
-            // Models is not set yet
-        };
+        auto uniformData = new Uniforms;
+        uniformData.projection = thisFrame.projection;
+        uniformData.view       = viewMatrix;
 
         auto modelMatrixEnts = entitiesWithComponent(thisFrame.modelMatrix);
 
         uint i = 0;
         foreach (e; modelMatrixEnts) {
+            assert(i <= uniformData.models.length);
             uniformData.models[i++] = thisFrame.modelMatrix[e];
         }
 
@@ -220,7 +202,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         uint[VertexBuffer] counts;
 
         foreach (e; vbufEnts) {
-            auto vbuf = thisFrame.vertexBuffer[e].get();
+            auto vbuf = thisFrame.vertexBuffer[e];
             counts[vbuf]++;
         }
 
@@ -252,13 +234,13 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         }
     }
 
-    updateVelocities();
-    updatePositions();
-    updateModelMatrices();
-    updateViewMatrices();
-    updatePlayerAcceleration();
-    Uniforms ubo = updateUniforms();
-    renderEntities(ubo);
+    logWhileDoing!updateVelocities();
+    logWhileDoing!updatePositions();
+    logWhileDoing!updateModelMatrices();
+    logWhileDoing!updateViewMatrices();
+    logWhileDoing!updatePlayerAcceleration();
+    Uniforms ubo = logWhileDoing!updateUniforms();
+    logWhileDoing!renderEntities(ubo);
 
     if (thisFrame.actionRequested[GameAction.QUIT_GAME]) {
         glfwSetWindowShouldClose(globals.window, GLFW_TRUE);
@@ -267,14 +249,17 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
     return thisFrame;
 }
 
-auto entitiesWithComponent(T)(T[] array) pure {
-    import std.range     : iota;
-    import std.algorithm : filter;
-    auto indices = iota(0, array.length, 1); 
-    auto ret = indices.filter!(i => !array[i].isNull);
-    import std.experimental.logger;
-    //debug log(" returning ", ret);
-    return ret;
+auto entitiesWithComponent(T)(T[Entity] map) pure {
+    import std.algorithm : sort;
+    return map.keys.sort;
+}
+
+unittest {
+    mat4[Entity] viewMatrix;
+    viewMatrix[Entity(50)] = mat4.identity;
+    auto ents = entitiesWithComponent(viewMatrix);
+    assert(ents.length == 1);
+    assert(ents[0] == Entity(50));
 }
 
 /// Returns the GameAction associated with this keyboard key.

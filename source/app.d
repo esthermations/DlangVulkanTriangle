@@ -1,16 +1,23 @@
 import std.stdio;
 import std.exception;
-import std.experimental.logger;
+
 import erupted;
 import glfw3.api;
 import gl3n.linalg;
 
-import util;
 static import globals;
+import util;
 import game;
 import renderer;
 
+
 void main() {
+
+    {
+        import std.concurrency : thisTid;
+        globals.mainThreadTid = thisTid();
+    }
+
 
     import core.time;
 
@@ -18,21 +25,21 @@ void main() {
 
     initialFrame.imageIndex = 0;
     initialFrame.projection = util.perspective(
-        globals.verticalFieldOfView, 
-        globals.aspectRatio, 
-        globals.nearPlane, 
+        globals.verticalFieldOfView,
+        globals.aspectRatio,
+        globals.nearPlane,
         globals.farPlane
     );
 
-    auto player      = initialFrame.createEntity;
-    auto camera      = initialFrame.createEntity;
-    auto theStranger = initialFrame.createEntity;
+    auto player      = Entity.create();
+    auto camera      = Entity.create();
+    auto theStranger = Entity.create();
 
     {
         alias f = initialFrame;
 
         f.position    [player]       = vec3(0);
-        f.scale       [player]       = 10.0;
+        f.scale       [player]       = Scale(1.0);
         f.velocity    [player]       = vec3(0);
         f.acceleration[player]       = vec3(0);
         f.controlledByPlayer[player] = true;
@@ -52,10 +59,10 @@ void main() {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
     globals.window = glfwCreateWindow(
-        globals.windowWidth, 
-        globals.windowHeight, 
-        "Carl", 
-        null, 
+        globals.windowWidth,
+        globals.windowHeight,
+        "Carl",
+        null,
         null
     );
     scope (exit) glfwDestroyWindow(globals.window);
@@ -68,7 +75,7 @@ void main() {
 
     // Init renderer
 
-    Renderer renderer;
+    Renderer renderer = new Renderer();
 
     import std.string : toStringz;
 
@@ -87,13 +94,13 @@ void main() {
 
     VkApplicationInfo appInfo = {
         pApplicationName : "Hello Triangle",
-        apiVersion       : VK_MAKE_VERSION(1, 1, 0),
+        apiVersion       : VK_MAKE_API_VERSION(0, 1, 1, 0),
     };
 
     renderer.initialise(
-        appInfo, 
-        requiredLayers, 
-        requiredInstanceExtensions, 
+        appInfo,
+        requiredLayers,
+        requiredInstanceExtensions,
         requiredDeviceExtensions,
     );
 
@@ -105,7 +112,7 @@ void main() {
 
     {
         import obj;
-        ObjData model = parseObj("./models/Barrel02.obj");
+        ObjData model = parseObj("./models/cube.obj");
         vertices.length = model.positions.length;
         foreach (i; 0 .. vertices.length) {
             vertices[i].position = model.positions[i];
@@ -116,17 +123,17 @@ void main() {
     // Create vertex buffer using those vertices
 
     auto barrelVertexBuffer = renderer.createBuffer!Vertex(
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 
-        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
         vertices.length,
     );
 
-    renderer.setBufferData(barrelVertexBuffer, vertices);
-    initialFrame.vertexBuffer[player]      = barrelVertexBuffer;
+    barrelVertexBuffer.mapMemoryAndSetData(vertices);
+    initialFrame.vertexBuffer[player] = barrelVertexBuffer;
 
     foreach (i; 0 .. 990) {
-        auto e = initialFrame.createEntity();
+        auto e = Entity.create();
 
         import std.random : uniform;
 
@@ -136,7 +143,7 @@ void main() {
 
         initialFrame.vertexBuffer[e] = barrelVertexBuffer;
         initialFrame.position    [e] = vec3(x, y, z);
-        initialFrame.scale       [e] = 5.0 + (i % 5);
+        initialFrame.scale       [e] = Scale(0.0 + 0.1 * (i % 5));
     }
 
     /*
@@ -145,17 +152,16 @@ void main() {
     ---------------------------------------------------------------------------
     */
 
-    uint frameNumber = 0;
-
     Frame thisFrame = game.tick(initialFrame, renderer);
 
     import core.thread.osthread;
 
     while (!glfwWindowShouldClose(globals.window)) {
+        ++globals.frameNumber;
         renderer.render(thisFrame);
         thisFrame = game.tick(thisFrame, renderer);
+        debug log("Frame ", globals.frameNumber);
     } // End of main loop
 
-    renderer.cleanupBuffer!(Vertex)(barrelVertexBuffer);
-    renderer.cleanup();
+    log("Thanks for playing!");
 }

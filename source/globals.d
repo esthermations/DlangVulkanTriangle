@@ -5,6 +5,7 @@ import erupted;
 import gl3n.linalg;
 
 import core.time;
+import std.concurrency : Tid, thisTid;
 
 /**
 
@@ -13,7 +14,12 @@ import core.time;
     members must be prefixed with 'globals.' to be accessed.
 
 **/
+
+Tid mainThreadTid;
+
 extern (C) nothrow @nogc:
+
+uint  frameNumber      = 0;
 
 bool  windowWasResized = false;
 uint  windowWidth      = 1280;
