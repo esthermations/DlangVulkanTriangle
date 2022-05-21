@@ -953,10 +953,6 @@ public:
         VkPhysicalDeviceProperties deviceProperties;
         vkGetPhysicalDeviceProperties(particularPhysicalDevice, &deviceProperties);
 
-        if (deviceProperties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-            return false;
-        }
-
         // Confirm device supports our desired queue families
         QueueFamilies families = selectQueueFamilies(particularPhysicalDevice);
         if (!families.isComplete) {
@@ -1033,14 +1029,20 @@ public:
         vkEnumeratePhysicalDevices(this.instance, &numPhysicalDevices,
                                    physicalDevices.ptr);
 
-        foreach (physicalDevice; physicalDevices) {
-            if (isSuitable(physicalDevice, requiredDeviceExtensions)) {
-                return physicalDevice;
-            }
+        debug log("Physical devices: ", physicalDevices);
+
+        import std.algorithm : filter;
+        auto suitableDevices = physicalDevices.filter!(
+            d => isSuitable(d, requiredDeviceExtensions)
+        );
+
+        debug log("Suitable devices: ", suitableDevices);
+
+        if (suitableDevices.empty) {
+            throw new Error("Couldn't find a suitable physical device!");
         }
 
-        enforce(false, "Couldn't find a suitable physical device!");
-        return VK_NULL_HANDLE;
+        return suitableDevices.front;
     }
 
     struct SwapchainSupportDetails {
