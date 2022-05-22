@@ -517,6 +517,8 @@ public:
 
         uint numImages = cast(uint) ret.imageViews.length;
 
+        debug log("Creating swapchain for ", numImages, " images");
+
         ret.renderPass     = this.createRenderPass(colourFormat, depthFormat);
         ret.pipeline       = this.createGraphicsPipeline(ret.renderPass);
         ret.depthResources = this.createDepthResources();
@@ -1383,6 +1385,7 @@ public:
 
     VkDescriptorPool createDescriptorPool(uint numDescriptors) {
         VkDescriptorPoolSize poolSize = {
+            type            : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             descriptorCount : numDescriptors,
         };
 
