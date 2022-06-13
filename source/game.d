@@ -67,7 +67,7 @@ struct Frame {
 }
 
 
-Frame tick(Frame previousFrame, ref Renderer renderer) {
+Frame tick(Frame previousFrame, ref Renderer renderer, uint imageIndex) {
     import std.algorithm : map, fold, setIntersection, each;
 
     debug log("Tick for frame ", globals.frameNumber);
@@ -86,14 +86,14 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         actionRequested    : [false],
     };
 
-    thisFrame.imageIndex = renderer.acquireNextImageIndex(previousFrame.imageIndex);
-
     glfwSetWindowUserPointer(globals.window, &thisFrame);
 
     // Poll GLFW events. This may result in the frame's state being modified
     // through the user pointer we just set, by the functions in
     // glfw_callbacks.d.
     glfwPollEvents();
+
+    thisFrame.imageIndex = imageIndex;
 
     /*
         Run systems
@@ -195,7 +195,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer) {
         auto modelEnts = entitiesWithComponent(thisFrame.modelMatrix);
         auto vbufEnts  = entitiesWithComponent(thisFrame.vertexBuffer);
         auto renderableEntities = setIntersection(modelEnts, vbufEnts);
-        debug(ecs) log(renderableEntities);
+        debug log(renderableEntities);
 
         renderer.beginCommandsForFrame(thisFrame.imageIndex, ubo);
 

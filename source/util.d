@@ -184,14 +184,14 @@ string cyan   (string s) { return AnsiColour.CYAN    ~ s ~ AnsiColour.DEFAULT; }
 string blue   (string s) { return AnsiColour.BLUE    ~ s ~ AnsiColour.DEFAULT; }
 string magenta(string s) { return AnsiColour.MAGENTA ~ s ~ AnsiColour.DEFAULT; }
 
-void log(AnsiColour colour = AnsiColour.DEFAULT, ArgTypes...)( ArgTypes args)
+void log(AnsiColour colour = AnsiColour.DEFAULT, ArgTypes...)(ArgTypes args)
 {
     static import globals;
     stderr.writeln("Frame ", globals.frameNumber, ": ", args);
 }
 
 
-void check(alias func, ArgTypes...)(
+auto check(alias func, ArgTypes...)(
     auto ref ArgTypes args,
     // Grabbing the callsite information...
     string callsiteFunction = __FUNCTION__,
@@ -205,6 +205,7 @@ void check(alias func, ArgTypes...)(
     auto errors = func(args);
     debug log(functionName, " -> ", errors, " @ ", callsiteModule, ":", callsiteLine);
     assert(!errors, "Non-success return code from Vulkan call: " ~ functionName);
+    return errors;
 }
 
 auto ref logWhileDoing(alias func, ArgTypes...)(
@@ -264,4 +265,9 @@ bool runningOnMainThread(Tid callsiteTid = thisTid())
 {
     static import globals;
     return callsiteTid == globals.mainThreadTid;
+}
+
+uint GetLengthAsUint(T)(T[] someArray)
+{
+    return cast(uint) someArray.length;
 }

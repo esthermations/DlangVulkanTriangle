@@ -1,8 +1,9 @@
 module renderer;
 
-import std.stdio;
+import std.conv : to;
 import std.exception : enforce;
 import std.typecons : Nullable;
+import std.stdio;
 
 import glfw3.api;
 import gl3n.linalg;
@@ -13,16 +14,87 @@ static import globals;
 import game;
 import util;
 
+
+struct BinarySemaphore
+{
+    void Signal  ()
+        in (  !m_expectedToBeSignalled)
+        out(;  m_expectedToBeSignalled)
+    {
+        util.log("Semaphore ", m_semaphore, " was signalled");
+        m_expectedToBeSignalled = true;
+    }
+
+    void Wait()
+        in (m_expectedToBeSignalled)
+    {
+        util.log("Semaphore ", m_semaphore, " is being waited on.");
+    }
+
+    void Unsignal()
+        in (   m_expectedToBeSignalled)
+        out(; !m_expectedToBeSignalled)
+    {
+        util.log("Semaphore ", m_semaphore, " was unsignalled");
+        m_expectedToBeSignalled = false;
+    }
+
+    alias m_semaphore this;
+
+    VkSemaphore m_semaphore;
+    bool        m_expectedToBeSignalled;
+}
+
+// Buffer types
+alias VertexBuffer  = Buffer!Vertex;
+alias UniformBuffer = Buffer!Uniforms;
+
+/// XXX: This must be a class so that it has reference semantics. Otherwise the
+/// destructor will be called when it is returned from a function, freeing its
+/// resources.
+class Buffer(DataT)
+{
+    VkDevice       device   = VK_NULL_HANDLE;
+    VkBuffer       buffer   = VK_NULL_HANDLE;
+    VkDeviceMemory memory   = VK_NULL_HANDLE;
+    ulong          size     = 0; /// Size in bytes of the buffer's storage
+
+    invariant(device != VK_NULL_HANDLE);
+    invariant(buffer != VK_NULL_HANDLE);
+    invariant(memory != VK_NULL_HANDLE);
+    invariant(size >= 0);
+
+    /// How many elements of type DataT can this buffer hold?
+    uint ElementCount() const
+    {
+        return (this.size / DataT.sizeof).to!uint;
+    }
+
+    /// Set the data in this buffer to the given value
+    void MapMemoryAndSetData(DataT[] data)
+    {
+        import core.stdc.string : memcpy;
+
+        void *dst = null;
+        check!vkMapMemory(device, memory, 0, size, 0, &dst);
+        memcpy(dst, data.ptr, (data.length * DataT.sizeof));
+        vkUnmapMemory(device, memory);
+    }
+
+    ~this()
+    {
+        log("Destructor: ", this);
+        vkDestroyBuffer(device, buffer, null);
+        vkFreeMemory   (device, memory, null);
+    }
+}
+
 // Extension function pointers -- these need to be loaded before called
 PFN_vkCreateDebugUtilsMessengerEXT  vkCreateDebugUtilsMessengerEXT;
 PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
 
-// Buffer types
-
-alias VertexBuffer  = Renderer.Buffer!Vertex;
-alias UniformBuffer = Renderer.Buffer!Uniforms;
-
-class Uniforms {
+class Uniforms
+{
     // Ensure this is equal to the one defined in shader.vert
     enum MAX_MODEL_UNIFORMS = 1000;
 
@@ -31,12 +103,14 @@ class Uniforms {
     mat4                     projection;
 }
 
-struct Vertex {
+struct Vertex
+{
     // Ensure updates here are reflected in Vertex.getAttributeDescription
     vec3 position; /// Model-space position of this vertex
     vec3 normal;   /// Vertex normal vector
 
-    static auto getBindingDescription() {
+    static auto getBindingDescription()
+    {
         VkVertexInputBindingDescription ret = {
             binding   : 0,
             stride    : Vertex.sizeof,
@@ -45,7 +119,8 @@ struct Vertex {
         return ret;
     }
 
-    static auto getAttributeDescription() {
+    static auto getAttributeDescription()
+    {
         VkVertexInputAttributeDescription[2] ret = [
             {
                 binding : 0,
@@ -64,7 +139,10 @@ struct Vertex {
     }
 }
 
-class Renderer {
+class Renderer
+{
+    enum kDepthFormat = VK_FORMAT_D16_UNORM;
+
 public:
 
     /*
@@ -79,14 +157,16 @@ public:
     VkDevice         logicalDevice;
     VkQueue          graphicsQueue;
     VkQueue          presentQueue;
-    //VkQueue transferQueue;
 
     VkDebugUtilsMessengerEXT debugMessenger;
 
-    VkDescriptorSetLayout   descriptorSetLayout;
-    VkPipelineLayout        pipelineLayout;
-    VkCommandPool           commandPool;
-    SwapchainWithDependents swapchain;
+    VkDescriptorSetLayout descriptorSetLayout;
+    VkPipelineLayout      pipelineLayout;
+    VkCommandPool         commandPool;
+    Swapchain             swapchain;
+
+    enum RendererState { BetweenFrames, AcceptingCommands, ReadyToPresent };
+    RendererState m_state = RendererState.BetweenFrames;
 
     /*
     ---------------------------------------------------------------------------
@@ -95,35 +175,54 @@ public:
     */
 
     /// Render (present) the given frame.
-    void render(Frame frame) {
+    void render(Frame frame)
+        in (  m_state == RendererState.ReadyToPresent)
+        out(; m_state == RendererState.BetweenFrames)
+    {
         VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
         VkSubmitInfo submitInfo = {
             waitSemaphoreCount   : 1,
-            pWaitSemaphores      : &this.swapchain.imageAvailableSemaphore,
+            pWaitSemaphores      : &this.swapchain.imageAvailableSemaphore.m_semaphore,
+            // Wait until image is available. This resets the semaphore when
+            // done waiting.
             pWaitDstStageMask    : &waitStages,
             signalSemaphoreCount : 1,
-            pSignalSemaphores    : &this.swapchain.renderFinishedSemaphore,
+            pSignalSemaphores    : &this.swapchain.renderFinishedSemaphore.m_semaphore, // Signal that rendering is done
             commandBufferCount   : 1,
             pCommandBuffers      : &this.swapchain.commandBuffers[frame.imageIndex],
         };
 
+        this.swapchain.imageAvailableSemaphore.Wait;
+
+        // Signals commandBufferReadyFence when done, so we can re-use the
+        // command buffer.
         check!vkQueueSubmit(this.graphicsQueue, 1, &submitInfo, this.swapchain.commandBufferReadyFence);
+
+        this.swapchain.imageAvailableSemaphore.Unsignal;
+        this.swapchain.renderFinishedSemaphore.Signal;
 
         VkPresentInfoKHR presentInfo = {
             waitSemaphoreCount : 1,
-            pWaitSemaphores    : &this.swapchain.renderFinishedSemaphore,
+            pWaitSemaphores    : &this.swapchain.renderFinishedSemaphore.m_semaphore,
+            // Wait for rendering to be done before presenting the image. This
+            // resets renderFinishedSemaphore.
             swapchainCount     : 1,
             pSwapchains        : &this.swapchain.swapchain,
             pImageIndices      : &frame.imageIndex,
             pResults           : null,
         };
 
+        this.swapchain.renderFinishedSemaphore.Wait;
+
         // Present the queue, and handle window resizes if needed
+        auto queuePresentResult = check!vkQueuePresentKHR(presentQueue, &presentInfo);
 
-        auto queuePresentResult = vkQueuePresentKHR(presentQueue, &presentInfo);
+        this.swapchain.renderFinishedSemaphore.Unsignal;
+        m_state = RendererState.BetweenFrames;
 
-        debug switch (queuePresentResult) {
+        debug switch (queuePresentResult)
+        {
             case VK_ERROR_OUT_OF_DATE_KHR: log("Out of date!"); break;
             case VK_SUBOPTIMAL_KHR:        log("Suboptimal!");  break;
             default: break;
@@ -135,12 +234,14 @@ public:
         {
             debug log("Recreating swapchain.");
             globals.windowWasResized = false;
-            this.swapchain = recreateSwapchainWithDependents();
+            this.swapchain = recreateSwapchain();
         }
-    } // end render()
+    }
+
 
     /// Will our Vulkan instance support all the provided layers?
-    bool haveAllRequiredLayers(const(char)*[] requiredLayers) {
+    bool haveAllRequiredLayers(const(char)*[] requiredLayers)
+    {
         uint layerCount;
         vkEnumerateInstanceLayerProperties(&layerCount, null);
         enforce(layerCount > 0, "No layers available? This is weird.");
@@ -198,9 +299,9 @@ public:
         {
             VkInstanceCreateInfo createInfo = {
                 pApplicationInfo        : &appInfo,
-                enabledExtensionCount   : cast(uint) requiredInstanceExtensions.length,
+                enabledExtensionCount   : requiredInstanceExtensions.GetLengthAsUint(),
                 ppEnabledExtensionNames : requiredInstanceExtensions.ptr,
-                enabledLayerCount       : cast(uint) requiredLayers.length,
+                enabledLayerCount       : requiredLayers.GetLengthAsUint(),
                 ppEnabledLayerNames     : requiredLayers.ptr,
             };
 
@@ -226,24 +327,22 @@ public:
 
         // Select physical device
 
-        this.physicalDevice = selectPhysicalDevice(requiredDeviceExtensions);
+        this.physicalDevice = selectPhysicalDevice(this.instance, requiredDeviceExtensions);
 
         // Create the logical device
-
-        QueueFamilies queueFamilies = selectQueueFamilies(this.physicalDevice);
-        enforce(queueFamilies.isComplete);
+        QueueFamilies queueFamilies = QueueFamilies.Get(this.physicalDevice, this.surface);
 
         {
             static float[1] queuePriorities = [1.0];
 
             VkDeviceQueueCreateInfo presentQueueCreateInfo = {
-                queueFamilyIndex : queueFamilies.present.get,
+                queueFamilyIndex : queueFamilies.present,
                 queueCount       : 1,
                 pQueuePriorities : queuePriorities.ptr,
             };
 
             VkDeviceQueueCreateInfo graphicsQueueCreateInfo = {
-                queueFamilyIndex : queueFamilies.graphics.get,
+                queueFamilyIndex : queueFamilies.graphics,
                 queueCount       : 1,
                 pQueuePriorities : queuePriorities.ptr,
             };
@@ -253,7 +352,8 @@ public:
             queueCreateInfos ~= graphicsQueueCreateInfo;
 
             // Append presentFamily only if it's different to graphics family.
-            if (queueFamilies.present.get != queueFamilies.graphics.get) {
+            if (queueFamilies.present != queueFamilies.graphics)
+            {
                 queueCreateInfos ~= presentQueueCreateInfo;
             }
 
@@ -261,9 +361,9 @@ public:
 
             VkDeviceCreateInfo createInfo = {
                 pQueueCreateInfos       : queueCreateInfos.ptr,
-                queueCreateInfoCount    : cast(uint) queueCreateInfos.length,
+                queueCreateInfoCount    : queueCreateInfos.GetLengthAsUint(),
                 pEnabledFeatures        : &deviceFeatures,
-                enabledExtensionCount   : cast(uint) requiredDeviceExtensions.length,
+                enabledExtensionCount   : requiredDeviceExtensions.GetLengthAsUint(),
                 ppEnabledExtensionNames : requiredDeviceExtensions.ptr,
             };
 
@@ -271,15 +371,12 @@ public:
         }
 
         // Load Vulkan functions for the VkDevice (via erupted)
-
         loadDeviceLevelFunctions(logicalDevice);
         debug log("Logical device created, and device-level functions loaded!");
 
         // Set queues for this device
-
-        vkGetDeviceQueue(logicalDevice, queueFamilies.graphics.get, 0, &graphicsQueue);
-        vkGetDeviceQueue(logicalDevice, queueFamilies.present.get, 0, &presentQueue);
-        //vkGetDeviceQueue(logicalDevice, queueFamilies.transfer.get, 0, &transferQueue);
+        vkGetDeviceQueue(logicalDevice, queueFamilies.graphics, 0, &graphicsQueue);
+        vkGetDeviceQueue(logicalDevice, queueFamilies.present, 0, &presentQueue);
 
         // Create descriptor set layout
 
@@ -315,7 +412,7 @@ public:
 
         {
             VkCommandPoolCreateInfo createInfo = {
-                queueFamilyIndex : queueFamilies.graphics.get,
+                queueFamilyIndex : queueFamilies.graphics,
                 flags            : VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
             };
 
@@ -324,11 +421,12 @@ public:
 
         // Create swapchain
 
-        this.swapchain = createSwapchainWithDependents();
+        this.swapchain = createSwapchain();
 
     } // end init()
 
-    VkDebugUtilsMessengerEXT createDebugMessenger() {
+    VkDebugUtilsMessengerEXT createDebugMessenger()
+    {
         extern (Windows) VkBool32
         debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT      messageSeverity,
                       VkDebugUtilsMessageTypeFlagsEXT             messageType,
@@ -376,20 +474,18 @@ public:
     }
 
 
-    VkSwapchainKHR createSwapchain() {
-        SwapchainSupportDetails support = querySwapchainSupport(this.physicalDevice);
-
-        immutable surfaceFormat = selectSurfaceFormat(support.formats);
-        immutable presentMode   = selectPresentMode(support.presentModes);
-        immutable extent        = selectExtent(globals.window, support.capabilities);
-        immutable imageCount    = support.capabilities.minImageCount;
+    VkSwapchainKHR
+    CreateVkSwapchain(GLFWwindow* window, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+    {
+        const support = SwapchainSupportDetails.Get(physicalDevice, surface);
+        immutable surfaceFormat = SelectSurfaceFormat(support.formats);
 
         VkSwapchainCreateInfoKHR swapchainCreateInfo = {
             surface               : surface,
-            minImageCount         : imageCount,
+            minImageCount         : support.capabilities.minImageCount,
             imageFormat           : surfaceFormat.format,
             imageColorSpace       : surfaceFormat.colorSpace,
-            imageExtent           : extent,
+            imageExtent           : SelectExtent(window, support.capabilities),
             imageArrayLayers      : 1,
             imageUsage            : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             imageSharingMode      : VK_SHARING_MODE_EXCLUSIVE,
@@ -397,15 +493,15 @@ public:
             pQueueFamilyIndices   : null,
             preTransform          : support.capabilities.currentTransform,
             compositeAlpha        : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            presentMode           : presentMode,
+            presentMode           : SelectPresentMode(support.presentModes),
             clipped               : VK_TRUE,
             oldSwapchain          : VK_NULL_HANDLE,
         };
 
-        VkSwapchainKHR swapchain;
-        check!vkCreateSwapchainKHR(logicalDevice, &swapchainCreateInfo, null, &swapchain);
+        VkSwapchainKHR ret;
+        check!vkCreateSwapchainKHR(logicalDevice, &swapchainCreateInfo, null, &ret);
 
-        return swapchain;
+        return ret;
     }
 
     VkImageView createImageView(VkDevice           logicalDevice,
@@ -448,8 +544,8 @@ public:
         images.length = numImages;
         vkGetSwapchainImagesKHR(logicalDevice, swapchain, &numImages, images.ptr);
 
-        auto support = querySwapchainSupport(this.physicalDevice);
-        auto format  = selectSurfaceFormat(support.formats).format;
+        auto support = SwapchainSupportDetails.Get(this.physicalDevice, this.surface);
+        auto format  = SelectSurfaceFormat(support.formats).format;
 
         // Image views
 
@@ -464,7 +560,18 @@ public:
         return ret;
     }
 
-    struct SwapchainWithDependents {
+    struct Swapchain
+    {
+        uint GetNumImages() inout
+        {
+            return imageViews.GetLengthAsUint();
+        }
+
+        void SetUniformDataForFrame(uint imageIndex, Uniforms data)
+        {
+            SendNewData(commandBuffers[imageIndex], uniformBuffers[imageIndex], [data]);
+        }
+
         VkSwapchainKHR    swapchain;
         VkRenderPass      renderPass;
         VkDescriptorPool  descriptorPool;
@@ -477,160 +584,129 @@ public:
         VkDescriptorSet         []descriptorSets;
         UniformBuffer           []uniformBuffers;
         VkCommandBuffer         []commandBuffers;
+
+        invariant(imageViews.length == framebuffers.length);
+        invariant(imageViews.length == descriptorSets.length);
+        invariant(imageViews.length == uniformBuffers.length);
+        invariant(imageViews.length == commandBuffers.length);
+
         /// Signalled when the commandBuffer for this image can be submitted
-        VkSemaphore     imageAvailableSemaphore;
+        BinarySemaphore         imageAvailableSemaphore;
         /// Signalled when this frame has been submitted to be presented
-        VkSemaphore     renderFinishedSemaphore;
+        BinarySemaphore         renderFinishedSemaphore;
         /// Signalled when the command buffer can be re-used
-        VkFence         commandBufferReadyFence;
-
-        invariant {
-            assert(imageViews.length == framebuffers.length);
-            assert(imageViews.length == descriptorSets.length);
-            assert(imageViews.length == uniformBuffers.length);
-            assert(imageViews.length == commandBuffers.length);
-            //assert(imageViews.length == imageAvailableSemaphores.length);
-            //assert(imageViews.length == renderFinishedSemaphores.length);
-        }
-
-        uint numImages() {
-            return cast(uint) imageViews.length;
-        }
+        VkFence                 commandBufferReadyFence;
     }
 
-    void setUniformDataForFrame(uint imageIndex, Uniforms data) {
-        Uniforms[1] ubos = [data];
-        issueUpdateCommand(imageIndex, this.swapchain.uniformBuffers[imageIndex], ubos);
-    }
+    Swapchain createSwapchain()
+    {
+        Swapchain ret;
 
-    SwapchainWithDependents createSwapchainWithDependents() {
-        SwapchainWithDependents ret;
+        vkDeviceWaitIdle(this.logicalDevice);
 
-        vkDeviceWaitIdle(logicalDevice);
-
-        const colourFormat = getSurfaceFormat();
-        const depthFormat  = getDepthFormat();
-        const extent = getSurfaceExtent();
-
-        ret.swapchain      = this.createSwapchain();
+        ret.swapchain      = this.CreateVkSwapchain(globals.window, this.physicalDevice, this.surface);
         ret.imageViews     = this.createImageViewsForSwapchain(ret.swapchain);
 
-        uint numImages = cast(uint) ret.imageViews.length;
+        immutable numImages = ret.imageViews.GetLengthAsUint();
 
         debug log("Creating swapchain for ", numImages, " images");
 
-        ret.renderPass     = this.createRenderPass(colourFormat, depthFormat);
+        ret.renderPass     = CreateRenderPass(
+            this.logicalDevice,
+            SelectSurfaceFormat(SwapchainSupportDetails.Get(this.physicalDevice, this.surface).formats).format,
+            kDepthFormat
+        );
+
         ret.pipeline       = this.createGraphicsPipeline(ret.renderPass);
         ret.depthResources = this.createDepthResources();
         ret.framebuffers   = this.createFramebuffers(ret.imageViews, ret.depthResources.imageView, ret.renderPass);
 
-        /*ret.uniformBuffers = */this.createUniformBuffers(ret.uniformBuffers, numImages);
+        ret.uniformBuffers = this.createUniformBuffers(numImages);
         ret.descriptorPool = this.createDescriptorPool(numImages);
         ret.descriptorSets = this.createDescriptorSets(numImages, ret.descriptorPool, this.descriptorSetLayout, ret.uniformBuffers);
         ret.commandBuffers = this.createCommandBuffers(numImages);
         ret.imageAvailableSemaphore = this.createSemaphore();
         ret.renderFinishedSemaphore = this.createSemaphore();
-        ret.commandBufferReadyFence = this.createFence();
+        ret.commandBufferReadyFence = this.createFence(VK_FENCE_CREATE_SIGNALED_BIT);
 
         return ret;
     }
 
     /// Clean up a swapchain and all its dependent items. There are a lot of them.
     /// The commandPool and pipelineLayout are NOT destroyed.
-    void cleanupSwapchainWithDependents() {
+    void cleanupSwapchain(Swapchain sc)
+    {
         vkDeviceWaitIdle(logicalDevice);
 
-        foreach (framebuffer; this.swapchain.framebuffers) {
+        foreach (framebuffer; sc.framebuffers)
+        {
             vkDestroyFramebuffer(this.logicalDevice, framebuffer, null);
         }
 
-        vkFreeCommandBuffers(this.logicalDevice, this.commandPool, this.swapchain.numImages(), this.swapchain.commandBuffers.ptr);
+        vkFreeCommandBuffers(this.logicalDevice, this.commandPool, this.swapchain.GetNumImages(), sc.commandBuffers.ptr);
 
-        vkDestroySemaphore(this.logicalDevice, this.swapchain.imageAvailableSemaphore, null);
-        vkDestroySemaphore(this.logicalDevice, this.swapchain.renderFinishedSemaphore, null);
-        vkDestroyFence    (this.logicalDevice, this.swapchain.commandBufferReadyFence, null);
+        vkDestroySemaphore (this.logicalDevice, sc.imageAvailableSemaphore.m_semaphore, null);
+        vkDestroySemaphore (this.logicalDevice, sc.renderFinishedSemaphore.m_semaphore, null);
+        vkDestroyFence     (this.logicalDevice, sc.commandBufferReadyFence, null);
+        vkDestroyPipeline  (this.logicalDevice, sc.pipeline, null);
+        vkDestroyRenderPass(this.logicalDevice, sc.renderPass, null);
 
-        vkDestroyPipeline(this.logicalDevice, this.swapchain.pipeline, null);
-
-        vkDestroyRenderPass(
-            this.logicalDevice, this.swapchain.renderPass, null);
-
-        foreach (view; this.swapchain.imageViews) {
+        foreach (view; sc.imageViews)
+        {
             vkDestroyImageView(this.logicalDevice, view, null);
         }
 
-        vkDestroyImageView(
-            this.logicalDevice, this.swapchain.depthResources.imageView, null);
-        vkDestroyImage(
-            this.logicalDevice, this.swapchain.depthResources.image, null);
-        vkFreeMemory(
-            this.logicalDevice, this.swapchain.depthResources.memory, null);
+        vkDestroyImageView(this.logicalDevice, sc.depthResources.imageView, null);
+        vkDestroyImage    (this.logicalDevice, sc.depthResources.image, null);
+        vkFreeMemory      (this.logicalDevice, sc.depthResources.memory, null);
 
-        foreach (buf; this.swapchain.uniformBuffers) {
+        foreach (buf; sc.uniformBuffers)
+        {
             vkDestroyBuffer(this.logicalDevice, buf.buffer, null);
             vkFreeMemory   (this.logicalDevice, buf.memory, null);
         }
 
         vkFreeDescriptorSets(
             this.logicalDevice,
-            this.swapchain.descriptorPool,
-            cast(uint) this.swapchain.descriptorSets.length,
-            this.swapchain.descriptorSets.ptr
+            sc.descriptorPool,
+            sc.descriptorSets.GetLengthAsUint,
+            sc.descriptorSets.ptr
         );
 
-        vkDestroyDescriptorPool(this.logicalDevice, this.swapchain.descriptorPool, null);
-
-        vkDestroySwapchainKHR(
-            this.logicalDevice, this.swapchain.swapchain, null);
+        vkDestroyDescriptorPool(this.logicalDevice, sc.descriptorPool, null);
+        vkDestroySwapchainKHR  (this.logicalDevice, sc.swapchain, null);
     }
 
-
-
-    SwapchainWithDependents recreateSwapchainWithDependents() {
+    Swapchain recreateSwapchain()
+    {
         vkDeviceWaitIdle(this.logicalDevice);
-        this.cleanupSwapchainWithDependents();
-        return createSwapchainWithDependents();
+        cleanupSwapchain(this.swapchain);
+        return createSwapchain();
     }
 
-    VkFence[] createFences(uint count, VkFenceCreateFlags flags = 0) {
-        VkFence[] ret;
-        ret.length = count;
-        foreach (i; 0 .. count) {
-            ret[i] = createFence(flags);
-        }
-        return ret;
-    }
 
-    VkFence createFence(VkFenceCreateFlags flags = 0) {
+    VkFence createFence(VkFenceCreateFlags flags = 0)
+    {
         VkFence ret;
         VkFenceCreateInfo info = { flags : flags, };
         check!vkCreateFence(this.logicalDevice, &info, null, &ret);
         return ret;
     }
 
-    /// Create the given number of semaphores using the Renderer's logical
-    /// device
-    VkSemaphore[] createSemaphores(uint count) {
-        VkSemaphore[] ret;
-        ret.length = count;
-        foreach (i; 0 .. count) {
-            ret[i] = createSemaphore();
-        }
-        return ret;
-    }
 
-    VkSemaphore createSemaphore() {
+    BinarySemaphore createSemaphore()
+    {
         VkSemaphore ret;
         VkSemaphoreCreateInfo info;
         check!vkCreateSemaphore(this.logicalDevice, &info, null, &ret);
-        return ret;
+        return BinarySemaphore(ret, false);
     }
+
 
     /// Create the given number of command buffers using the Renderer's current
     /// command pool.
     VkCommandBuffer[] createCommandBuffers(uint count) {
-        VkCommandBuffer[] ret;
-        ret.length = count;
+        auto ret = new VkCommandBuffer[count];
 
         VkCommandBufferAllocateInfo allocateInfo = {
             commandPool        : commandPool,
@@ -640,6 +716,7 @@ public:
 
         check!vkAllocateCommandBuffers(this.logicalDevice, &allocateInfo, ret.ptr);
 
+        debug log("Allocated command buffers: ", ret);
         return ret;
     }
 
@@ -658,7 +735,7 @@ public:
 
             VkFramebufferCreateInfo createInfo = {
                 renderPass      : renderPass,
-                attachmentCount : cast(uint) attachments.length,
+                attachmentCount : attachments.GetLengthAsUint(),
                 pAttachments    : attachments.ptr,
                 width           : extent.width,
                 height          : extent.height,
@@ -671,17 +748,19 @@ public:
         return ret;
     }
 
-    VkExtent2D getSurfaceExtent() {
-        const support = querySwapchainSupport(this.physicalDevice);
-        return selectExtent(globals.window, support.capabilities);
+    VkExtent2D getSurfaceExtent()
+    {
+        const support = SwapchainSupportDetails.Get(this.physicalDevice, this.surface);
+        return SelectExtent(globals.window, support.capabilities);
     }
 
     /// Set up the graphics pipeline for our application. There are a lot of
-    /// hardcoded properties about our pipeline in this function -- it's not nearly
-    /// as agnostic as it may appear.
-    VkPipeline createGraphicsPipeline(VkRenderPass renderPass) {
-        VkShaderModule vertModule = createShaderModule(logicalDevice, "./source/vert.spv");
-        VkShaderModule fragModule = createShaderModule(logicalDevice, "./source/frag.spv");
+    /// hardcoded properties about our pipeline in this function -- it's not
+    /// nearly as agnostic as it may appear.
+    VkPipeline createGraphicsPipeline(VkRenderPass renderPass)
+    {
+        VkShaderModule vertModule = CreateShaderModule(logicalDevice, "./source/vert.spv");
+        VkShaderModule fragModule = CreateShaderModule(logicalDevice, "./source/frag.spv");
 
         VkPipelineShaderStageCreateInfo vertStageCreateInfo = {
             stage  : VK_SHADER_STAGE_VERTEX_BIT,
@@ -701,7 +780,7 @@ public:
         VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {
             vertexBindingDescriptionCount   : 1,
             pVertexBindingDescriptions      : &bindingDescription,
-            vertexAttributeDescriptionCount : cast(uint) attributeDescriptions.length,
+            vertexAttributeDescriptionCount : attributeDescriptions.GetLengthAsUint(),
             pVertexAttributeDescriptions    : attributeDescriptions.ptr,
         };
 
@@ -777,7 +856,7 @@ public:
             [vertStageCreateInfo, fragStageCreateInfo];
 
         VkGraphicsPipelineCreateInfo createInfo = {
-            stageCount          : cast(uint) shaderStages.length,
+            stageCount          : shaderStages.GetLengthAsUint(),
             pStages             : shaderStages.ptr,
             pVertexInputState   : &vertexInputCreateInfo,
             pInputAssemblyState : &inputAssemblyCreateInfo,
@@ -802,149 +881,55 @@ public:
         return ret;
     }
 
-    /// FIXME this should probably return a VkSurfaceFormatKHR.
-    VkFormat getSurfaceFormat() {
-        return selectSurfaceFormat(querySwapchainSupport(this.physicalDevice).formats).format;
-    }
+    struct QueueFamilies
+    {
+        enum kInvalid = uint.max;
 
-    VkRenderPass createRenderPass(VkFormat colourFormat, VkFormat depthFormat) {
+        uint graphics = kInvalid;
+        uint present  = kInvalid;
 
-        VkAttachmentDescription colourAttachment = {
-            flags          : 0,
-            format         : colourFormat,
-            samples        : VK_SAMPLE_COUNT_1_BIT,
-            loadOp         : VK_ATTACHMENT_LOAD_OP_CLEAR,
-            storeOp        : VK_ATTACHMENT_STORE_OP_STORE,
-            stencilLoadOp  : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            stencilStoreOp : VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            initialLayout  : VK_IMAGE_LAYOUT_UNDEFINED,
-            finalLayout    : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        };
-
-        VkAttachmentReference colourAttachmentReference = {
-            attachment : 0,
-            layout     : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        };
-
-        debug log("Depth format is ", depthFormat);
-
-        VkAttachmentDescription depthAttachment = {
-            format         : depthFormat,
-            samples        : VK_SAMPLE_COUNT_1_BIT,
-            loadOp         : VK_ATTACHMENT_LOAD_OP_CLEAR,
-            storeOp        : VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            stencilLoadOp  : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            stencilStoreOp : VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            initialLayout  : VK_IMAGE_LAYOUT_UNDEFINED,
-            finalLayout    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
-
-        VkAttachmentReference depthAttachmentReference = {
-            attachment : 1,
-            layout     : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
-
-        VkSubpassDescription subpass = {
-            pipelineBindPoint       : VK_PIPELINE_BIND_POINT_GRAPHICS,
-            colorAttachmentCount    : 1,
-            pColorAttachments       : &colourAttachmentReference,
-            pDepthStencilAttachment : &depthAttachmentReference,
-        };
-
-        VkSubpassDependency dependency = {
-            srcSubpass    : VK_SUBPASS_EXTERNAL,
-            dstSubpass    : 0,
-            srcStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            srcAccessMask : 0,
-            dstStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            dstAccessMask : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        };
-
-        auto attachments = [colourAttachment, depthAttachment];
-
-        VkRenderPassCreateInfo createInfo = {
-            attachmentCount : cast(uint) attachments.length,
-            pAttachments    : attachments.ptr,
-            subpassCount    : 1,
-            pSubpasses      : &subpass,
-            dependencyCount : 1,
-            pDependencies   : &dependency,
-        };
-
-        VkRenderPass ret;
-        check!vkCreateRenderPass(logicalDevice, &createInfo, null, &ret);
-
-        return ret;
-    }
-
-    struct QueueFamilies {
-        Nullable!uint graphics;
-        Nullable!uint present;
-        Nullable!uint transfer;
-
-        /// Are all queue families available?
-        bool isComplete() {
-            return !graphics.isNull && !present.isNull;
-        }
-    }
-
-    /// Select queue families that meet our criteria, defined in this function.
-    /// The members of QueueFamilies are nullable -- this function may fail to
-    /// find all the queue families in that struct. If it can't find them, they
-    /// will be null.
-    QueueFamilies selectQueueFamilies(VkPhysicalDevice particularPhysicalDevice) {
-        VkQueueFamilyProperties[] queueFamilies;
-        uint queueFamilyCount;
-        vkGetPhysicalDeviceQueueFamilyProperties(particularPhysicalDevice,
-                                                 &queueFamilyCount,
-                                                 null);
-        queueFamilies.length = queueFamilyCount;
-        vkGetPhysicalDeviceQueueFamilyProperties(particularPhysicalDevice,
-                                                 &queueFamilyCount,
-                                                 queueFamilies.ptr);
-
-        QueueFamilies ret;
-
-        // debug log("Queue families: ", queueFamilies);
-
-        foreach (i, family; queueFamilies) {
-            auto supportsGraphics = family.queueFlags & VK_QUEUE_GRAPHICS_BIT;
-
-            if (supportsGraphics) {
-                ret.graphics = cast(uint) i;
-            }
-
-            VkBool32 supportsPresent = false;
-            vkGetPhysicalDeviceSurfaceSupportKHR(particularPhysicalDevice,
-                                                 cast(uint) i,
-                                                 surface,
-                                                 &supportsPresent);
-
-            // NOTE: We may want to use different queue families for graphics
-            // and present. Not sure why, but the tutorial said we would.
-            if (supportsPresent) {
-                ret.present = cast(uint) i;
-            }
-
-            auto supportsTransfer =
-                (family.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
-                !(family.queueFlags & VK_QUEUE_GRAPHICS_BIT);
-
-            if (supportsTransfer) {
-                ret.transfer = cast(uint) i;
-            }
-
-            if (ret.isComplete) {
-                //debug log("Using queues ", ret);
-                return ret;
-            }
+        bool IsValid() inout
+        {
+            return graphics != kInvalid
+                && present  != kInvalid;
         }
 
-        enforce(ret.isComplete, "Failed to find suitable queue families.");
-        return ret;
+        /// Select queue families that meet the criteria defined in this function.
+        static QueueFamilies Get(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+        {
+            VkQueueFamilyProperties[] queueFamilies;
+            uint queueFamilyCount;
+            vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, null);
+            queueFamilies.length = queueFamilyCount;
+            vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.ptr);
+
+            QueueFamilies ret;
+
+            foreach (i, family; queueFamilies)
+            {
+                immutable index = i.to!uint;
+
+                bool supportsGraphics = family.queueFlags & VK_QUEUE_GRAPHICS_BIT;
+
+                if (supportsGraphics)
+                {
+                    ret.graphics = index;
+                }
+
+                VkBool32 supportsPresent = false;
+                vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, index, surface, &supportsPresent);
+
+                // NOTE: We may want to use different queue families for graphics
+                // and present. Not sure why, but the tutorial said we would.
+                if (supportsPresent)
+                {
+                    ret.present = index;
+                }
+            }
+
+            assert(ret.IsValid(), "Failed to find suitable queue families.");
+            return ret;
+        }
     }
 
     /// Is this device suitable for our purposes?
@@ -956,8 +941,9 @@ public:
         vkGetPhysicalDeviceProperties(particularPhysicalDevice, &deviceProperties);
 
         // Confirm device supports our desired queue families
-        QueueFamilies families = selectQueueFamilies(particularPhysicalDevice);
-        if (!families.isComplete) {
+        const families = QueueFamilies.Get(particularPhysicalDevice, this.surface);
+        if (!families.IsValid())
+        {
             return false;
         }
 
@@ -976,52 +962,47 @@ public:
 
         // FIXME: this is an enormous nightmare because extension names are
         // char[256] and some things are const(char)* and some things are
-        // string. That's all.
+        // string. But the key to the extensionFound hashmap needs to be a
+        // string, so it will hash the contents and not just the address, cause
+        // the addresses could be anything.
 
-        import std.string : fromStringz;
+        import std.string    : fromStringz;
+        import std.algorithm : map;
+
         bool[string] extensionFound;
 
-        foreach (ext; requiredDeviceExtensions) {
-            extensionFound[ext.fromStringz] = false;
+        foreach (name; requiredDeviceExtensions.map!(s => s.fromStringz))
+        {
+            extensionFound[name] = false;
         }
 
-        foreach (ext; availableDeviceExtensions) {
-            auto name = ext.extensionName.ptr.fromStringz;
-
-            if (name in extensionFound) {
-                extensionFound[name.idup] = true;
+        foreach (name; availableDeviceExtensions.map!(ext => ext.extensionName.ptr.fromStringz.idup))
+        {
+            if (name in extensionFound)
+            {
+                extensionFound[name] = true;
             }
         }
 
-        bool allExtensionsSupported = true;
-
-        foreach (ext; requiredDeviceExtensions) {
-            if (!extensionFound[ext.fromStringz]) {
-                allExtensionsSupported = false;
+        foreach (name; requiredDeviceExtensions.map!(s => s.fromStringz))
+        {
+            if (!extensionFound[name])
+            {
+                // Not all extensions are supported -- device isn't suitable
+                return false;
             }
-        }
-
-        if (!allExtensionsSupported) {
-            return false;
         }
 
         // Confirm swapchain support
-        bool swapchainSuitable;
+        const support = SwapchainSupportDetails.Get(particularPhysicalDevice, this.surface);
 
-        SwapchainSupportDetails swapchainSupport = querySwapchainSupport(particularPhysicalDevice);
-        swapchainSuitable = swapchainSupport.formats.length      != 0 &&
-                            swapchainSupport.presentModes.length != 0;
-
-        if (!swapchainSuitable) {
-            return false;
-        }
-
-        return true;
+        return support.formats.length != 0 && support.presentModes.length != 0;
     }
 
     /// Select a physical device available in the instance based on whether it
     /// satisfies isSuitable().
-    VkPhysicalDevice selectPhysicalDevice(const(char)*[] requiredDeviceExtensions) {
+    VkPhysicalDevice selectPhysicalDevice(VkInstance instance, const(char)*[] requiredDeviceExtensions)
+    {
         uint numPhysicalDevices;
         vkEnumeratePhysicalDevices(this.instance, &numPhysicalDevices, null);
         enforce(numPhysicalDevices > 0, "Couldn't find any devices!!");
@@ -1040,138 +1021,33 @@ public:
 
         debug log("Suitable devices: ", suitableDevices);
 
-        if (suitableDevices.empty) {
+        if (suitableDevices.empty)
+        {
             throw new Error("Couldn't find a suitable physical device!");
         }
 
         return suitableDevices.front;
     }
 
-    struct SwapchainSupportDetails {
-        VkSurfaceCapabilitiesKHR   capabilities;
-        VkSurfaceFormatKHR       []formats;
-        VkPresentModeKHR         []presentModes;
-    }
-
-    SwapchainSupportDetails querySwapchainSupport(VkPhysicalDevice particularPhysicalDevice) {
-        SwapchainSupportDetails ret;
-
-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-            particularPhysicalDevice, this.surface, &ret.capabilities);
-
-        uint numFormats;
-        vkGetPhysicalDeviceSurfaceFormatsKHR(
-            particularPhysicalDevice, this.surface, &numFormats, null);
-        ret.formats.length = numFormats;
-        vkGetPhysicalDeviceSurfaceFormatsKHR(
-            particularPhysicalDevice, this.surface, &numFormats, ret.formats.ptr);
-
-        uint numPresentModes;
-        vkGetPhysicalDeviceSurfacePresentModesKHR(
-            particularPhysicalDevice, this.surface, &numPresentModes, null);
-        ret.presentModes.length = numPresentModes;
-        vkGetPhysicalDeviceSurfacePresentModesKHR(
-            particularPhysicalDevice,
-            this.surface,
-            &numPresentModes,
-            ret.presentModes.ptr
-        );
-
-        return ret;
-    }
-
-    VkSurfaceFormatKHR selectSurfaceFormat(in VkSurfaceFormatKHR[] formats)
-        in (formats.length != 0)
+    /// Acquire the imageIndex for the next frame, and signal the
+    /// imageAvailableSemaphore which the queue submit will wait for.
+    uint NextFrame()
+        in (m_state == RendererState.BetweenFrames)
     {
-        foreach (format; formats) {
-            if (format.format == VK_FORMAT_B8G8R8_SRGB &&
-                format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-            {
-                return format;
-            }
-        }
-
-        return formats[0];
-    }
-
-    /**
-    -------------------------------------------------------------------------------
-    --  selectPresentMode
-    -------------------------------------------------------------------------------
-    */
-
-    VkPresentModeKHR selectPresentMode(VkPresentModeKHR[] presentModes) {
-        foreach (presentMode; presentModes) {
-            // Triple-buffered. Might prefer IMMEDIATE for non-vsync.
-            if (presentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
-                return presentMode;
-            }
-        }
-
-        // Fallback case -- FIFO is guaranteed to be available
-        return VK_PRESENT_MODE_FIFO_KHR;
-    }
-
-    VkExtent2D selectExtent(   GLFWwindow              *window,
-                            in VkSurfaceCapabilitiesKHR capabilities) {
-
-        // If width/height are set to 0xFFFFFFFF (UINT32_MAX) then the swapchain
-        // gets to set the size of the extent (vkspec page 1153).
-
-        if (capabilities.currentExtent.width != 0xFFFFFFFF) {
-            // We're required to use the provided extent
-            return capabilities.currentExtent;
-        } else {
-            // We get to choose the size of the surface, so we use the closest to
-            // the size of the window as is valid.
-            debug log("We're doing the surface extent translation thing.");
-
-            int width, height;
-            glfwGetFramebufferSize(window, &width, &height);
-
-            import std.algorithm : clamp;
-
-            immutable minWidth  = capabilities.minImageExtent.width;
-            immutable maxWidth  = capabilities.maxImageExtent.width;
-            immutable minHeight = capabilities.minImageExtent.height;
-            immutable maxHeight = capabilities.maxImageExtent.height;
-
-            VkExtent2D ret = {
-                width  : cast(uint) clamp(width, minWidth, maxWidth),
-                height : cast(uint) clamp(height, minHeight, maxHeight),
-            };
-
-            return ret;
-        }
-    }
-
-    VkShaderModule createShaderModule(VkDevice logicalDevice, string path) {
-        import std.stdio : File;
-        auto file = File(path, "rb");
-        auto data = file.rawRead(new uint[file.size / uint.sizeof]);
-
-        VkShaderModuleCreateInfo createInfo = {
-            codeSize : data.length * uint.sizeof,
-            pCode    : data.ptr,
-        };
-
-        VkShaderModule ret;
-        check!vkCreateShaderModule(logicalDevice, &createInfo, null, &ret);
-
-        return ret;
-    }
-
-    /// Acquire the imageIndex for the next frame.
-    uint acquireNextImageIndex(uint previousFrameImageIndex) {
         uint imageIndex;
+
         check!vkAcquireNextImageKHR(
             this.logicalDevice,
             this.swapchain.swapchain,
             ulong.max, // timeout (ns)
             this.swapchain.imageAvailableSemaphore,
-            VK_NULL_HANDLE, // fence
+            // Signalled when the image is grabbed. Note that if this function
+            // doesn't return VK_SUCCESS, this may not be signalled.
+            VK_NULL_HANDLE,
             &imageIndex
         );
+
+        this.swapchain.imageAvailableSemaphore.Signal;
         return imageIndex;
     }
 
@@ -1182,61 +1058,22 @@ public:
     */
 
 
-    class Buffer(DataT) {
-        Renderer       renderer = null;
-        VkBuffer       buffer   = VK_NULL_HANDLE;
-        VkDeviceMemory memory   = VK_NULL_HANDLE;
-        ulong          size     = 0; /// Size in bytes of the buffer's storage
-
-        invariant(renderer !is null);
-        invariant(buffer != VK_NULL_HANDLE);
-        invariant(memory != VK_NULL_HANDLE);
-
-        /// How many elements of type DataT can this buffer hold?
-        uint elementCount() const
-        {
-            return cast(uint) this.size / DataT.sizeof;
-        }
-
-        /// Set the data in this buffer to the given value
-        void mapMemoryAndSetData(DataT[] data)
-        {
-            void *dst = null;
-            check!vkMapMemory(renderer.logicalDevice, memory, 0, size, 0, &dst);
-            {
-                import core.stdc.string : memcpy;
-                memcpy(dst, data.ptr, (data.length * DataT.sizeof));
-            }
-            vkUnmapMemory(renderer.logicalDevice, memory);
-        }
-
-        ~this()
-        {
-            log("Destructor: ", this);
-            vkDestroyBuffer(this.renderer.logicalDevice, buffer, null);
-            vkFreeMemory(this.renderer.logicalDevice, memory, null);
-        }
-    }
-
-
-    Buffer!DataT createBuffer(DataT)(
-        VkBufferUsageFlags usage,
+    Buffer!DataT CreateBuffer(DataT)(
+        VkBufferUsageFlags    usage,
         VkMemoryPropertyFlags memoryPropertyFlags,
-        size_t numElements = 1
+        size_t                numElements = 1
     )
-        // in (runningOnMainThread())
         in  (this.logicalDevice != VK_NULL_HANDLE)
         in  (numElements > 0)
         out (b; b.size     == numElements * DataT.sizeof)
-        out (b; b.renderer == this)
+        out (b; b.device   == this.logicalDevice)
         out (b; b.buffer   != VK_NULL_HANDLE)
         out (b; b.memory   != VK_NULL_HANDLE)
     {
-        auto ret = new Buffer!DataT();
-        ret.size     = numElements * DataT.sizeof;
-        ret.renderer = this;
+        auto ret = new Buffer!DataT;
 
-        VkDevice device = this.logicalDevice;
+        ret.size     = numElements * DataT.sizeof;
+        ret.device   = this.logicalDevice;
 
         // Create buffer
         VkBufferCreateInfo bufInfo = {
@@ -1246,12 +1083,12 @@ public:
             // ^^ I guess this is where you'd do buffer aliasing etc
         };
 
-        check!vkCreateBuffer(device, &bufInfo, null, &ret.buffer);
+        check!vkCreateBuffer(ret.device, &bufInfo, null, &ret.buffer);
         log("Created buffer ", ret.buffer);
 
         // Create ret.memory
         VkMemoryRequirements memRequirements;
-        vkGetBufferMemoryRequirements(device, ret.buffer, &memRequirements);
+        vkGetBufferMemoryRequirements(ret.device, ret.buffer, &memRequirements);
 
         VkMemoryAllocateInfo memInfo = {
             allocationSize  : memRequirements.size,
@@ -1259,15 +1096,14 @@ public:
                 memRequirements.memoryTypeBits, memoryPropertyFlags),
         };
 
-        check!vkAllocateMemory(device, &memInfo, null, &ret.memory);
+        check!vkAllocateMemory(ret.device, &memInfo, null, &ret.memory);
         log("Created Memory ", ret.memory);
 
-        check!vkBindBufferMemory(device, ret.buffer, ret.memory, 0);
+        check!vkBindBufferMemory(ret.device, ret.buffer, ret.memory, 0);
 
-        log("Returning: ", &ret);
+        log(__FUNCTION__, " Returning: ", &ret);
         return ret;
     }
-
 
 
     /// Issue a command to render the given number of instances of the given
@@ -1275,55 +1111,52 @@ public:
     void issueRenderCommands(DataT)(uint         imageIndex,
                                     Buffer!DataT buffer,
                                     uint         numInstances)
+        in (m_state == RendererState.AcceptingCommands)
     {
         VkBuffer[1]     buffers = [buffer.buffer];
         VkDeviceSize[1] offsets = [0];
 
         auto cb = this.swapchain.commandBuffers[imageIndex];
 
-        debug {
-            log("cb = ", cb);
-            log("VkBuffer = ", buffer.buffer);
-        }
+        debug log("Rendering VkBuffer ", buffer.buffer, " ", numInstances, " times");
 
         vkCmdBindVertexBuffers(cb, 0, 1, buffers.ptr, offsets.ptr);
-        vkCmdDraw             (cb, buffer.elementCount(), numInstances, 0, 0);
-    }
-
-    /// Issue a command to update this buffer. NOTE: This cannot be performed
-    /// during a render pass, according to the Vulkan spec
-    void issueUpdateCommand(DataT)(uint         imageIndex,
-                                   Buffer!DataT buffer,
-                                   DataT[]      data)
-         in (data.length != 0)
-         in (data.length * DataT.sizeof <= buffer.size)
-         in (buffer.size < 65536) // vkspec pp. 832
-    {
-        immutable VkDeviceSize dataSize = (data.length * DataT.sizeof);
-        vkCmdUpdateBuffer(this.swapchain.commandBuffers[imageIndex], buffer.buffer, 0, dataSize, data.ptr);
+        vkCmdDraw             (cb, buffer.ElementCount(), numInstances, 0, 0);
     }
 
     /// Reset the command buffer for this frame, then move it to the Recording
     /// state.
-    void beginCommandsForFrame(uint imageIndex, Uniforms uniformData) {
+    void beginCommandsForFrame(uint imageIndex, Uniforms uniformData)
+        in  (  m_state == RendererState.BetweenFrames)
+        out (; m_state == RendererState.AcceptingCommands)
+    {
         auto cb = this.swapchain.commandBuffers[imageIndex];
 
+        util.log("Waiting for commandBufferReadyFence");
+
         // Wait for the command buffer to be ready (signalled by vkQueueSubmit)
-        vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence, false, ulong.max);
+        check!vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence, false, ulong.max);
+
+        util.log("Finished waiting for commandBufferReadyFence");
+
         // Reset the fence for next time
-        vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence);
+        check!vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence);
+
+        util.log("Reset commandBufferReadyFence");
+
         // Reset the command buffer, putting it in the Initial state
-        vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);
+        check!vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);
+
         // Begin the command buffer, putting it in the Recording state
         VkCommandBufferBeginInfo beginInfo = {
             flags : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
 
-        vkBeginCommandBuffer(cb, &beginInfo);
+        check!vkBeginCommandBuffer(cb, &beginInfo);
+        m_state = RendererState.AcceptingCommands;
 
         // Send updated uniform data
-        Uniforms[1] ubo = [uniformData];
-        issueUpdateCommand(imageIndex, this.swapchain.uniformBuffers[imageIndex], ubo);
+        swapchain.SetUniformDataForFrame(imageIndex, uniformData);
 
         // Start a render pass
         VkRenderPassBeginInfo info = {
@@ -1333,7 +1166,7 @@ public:
                 offset : {0, 0},
                 extent : this.getSurfaceExtent(),
             },
-            clearValueCount : cast(uint) globals.clearValues.length,
+            clearValueCount : globals.clearValues.GetLengthAsUint(),
             pClearValues    : globals.clearValues.ptr,
         };
 
@@ -1344,14 +1177,19 @@ public:
                                 this.pipelineLayout, 0, 1,
                                 &this.swapchain.descriptorSets[imageIndex], 0,
                                 null);
+
     }
 
     /// Indicate that we are finished recording rendering commands for this
     /// frame, and the command buffer may be submitted.
-    void endCommandsForFrame(uint imageIndex) {
+    void endCommandsForFrame(uint imageIndex)
+        in  (  m_state == RendererState.AcceptingCommands)
+        out (; m_state == RendererState.ReadyToPresent)
+    {
         auto cb = this.swapchain.commandBuffers[imageIndex];
         vkCmdEndRenderPass(cb);
         check!vkEndCommandBuffer(cb);
+        m_state = RendererState.ReadyToPresent;
     }
 
     /**
@@ -1409,20 +1247,16 @@ public:
         VkDeviceMemory memory;
     }
 
-    VkFormat getDepthFormat() {
-        return VK_FORMAT_D16_UNORM;
-    }
-
-    DepthResources createDepthResources() {
+    DepthResources createDepthResources()
+    {
         VkExtent2D extent = this.getSurfaceExtent();
-        auto imageFormat = this.getDepthFormat();
 
         VkImageCreateInfo createInfo = {
             imageType     : VK_IMAGE_TYPE_2D,
-            extent        : { width: extent.width, height: extent.height, depth: 1},
+            extent        : { width: extent.width, height: extent.height, depth: 1 },
             mipLevels     : 1,
             arrayLayers   : 1,
-            format        : imageFormat,
+            format        : kDepthFormat,
             tiling        : VK_IMAGE_TILING_OPTIMAL,
             initialLayout : VK_IMAGE_LAYOUT_UNDEFINED,
             usage         : VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1449,7 +1283,7 @@ public:
         DepthResources ret = {
             image     : image,
             memory    : memory,
-            imageView : createImageView(this.logicalDevice, image, imageFormat,
+            imageView : createImageView(this.logicalDevice, image, kDepthFormat,
                                         VK_IMAGE_ASPECT_DEPTH_BIT),
         };
 
@@ -1502,34 +1336,36 @@ public:
         return ret;
     }
 
-    void createUniformBuffers(out UniformBuffer[] ret, ulong count)
-        in  (ret.length == 0)
-        out (; ret.length == count)
+    UniformBuffer[] createUniformBuffers(ulong count)
+        out (ret; ret.length == count)
         // out (ret; !ret.containsDuplicates)
     {
-        foreach (i; 0 .. count) {
-            ret ~= this.createBuffer!Uniforms(
-                ( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                  VK_BUFFER_USAGE_TRANSFER_DST_BIT   ),
-                ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT  |
-                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT )
+        auto ret = new UniformBuffer[count];
+        foreach (ref buf; ret)
+        {
+            buf = CreateBuffer!Uniforms(
+                (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT  | VK_BUFFER_USAGE_TRANSFER_DST_BIT),
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
             );
         }
+        return ret;
     }
 
-    /// Clean up all Vulkan state, ready to shut down the application. Or recreate
-    /// the entire Vulkan context. Or whatever.
-    ~this() {
+    /// Clean up all Vulkan state, ready to shut down the application. Or
+    /// recreate the entire Vulkan context. Or whatever.
+    ~this()
+    {
         log("Destructor: ", this);
         // Device-level
-        cleanupSwapchainWithDependents ();
+        cleanupSwapchain(this.swapchain);
 
         vkDestroyCommandPool           (this.logicalDevice, this.commandPool, null);
         vkDestroyPipelineLayout        (this.logicalDevice, this.pipelineLayout, null);
         vkDestroyDescriptorSetLayout   (this.logicalDevice, this.descriptorSetLayout, null);
         vkDestroyDevice                (this.logicalDevice, null);
         // Instance-level
-        if (this.debugMessenger) {
+        if (this.debugMessenger)
+        {
             vkDestroyDebugUtilsMessengerEXT(this.instance, this.debugMessenger, null);
         }
         vkDestroySurfaceKHR            (this.instance, this.surface, null);
@@ -1537,3 +1373,212 @@ public:
     }
 
 } // end struct Renderer
+
+
+VkPresentModeKHR SelectPresentMode(in VkPresentModeKHR[] presentModes)
+    pure
+{
+    import std.algorithm : canFind;
+
+    if (presentModes.canFind(VK_PRESENT_MODE_MAILBOX_KHR))
+    {
+        // Triple-buffered. Might prefer IMMEDIATE for non-vsync.
+        return VK_PRESENT_MODE_MAILBOX_KHR;
+    }
+
+    // Fallback case -- FIFO is guaranteed to be available
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+
+VkSurfaceFormatKHR SelectSurfaceFormat(in VkSurfaceFormatKHR[] formats)
+    pure
+    in (formats.length != 0)
+{
+    foreach (format; formats)
+    {
+        if (format.format     == VK_FORMAT_B8G8R8_SRGB &&
+            format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        {
+            return format;
+        }
+    }
+
+    return formats[0];
+}
+
+
+VkShaderModule CreateShaderModule(VkDevice logicalDevice, string path)
+{
+    import std.stdio : File;
+    auto file = File(path, "rb");
+    auto data = file.rawRead(new uint[file.size / uint.sizeof]);
+
+    VkShaderModuleCreateInfo createInfo = {
+        codeSize : data.length * uint.sizeof,
+        pCode    : data.ptr,
+    };
+
+    VkShaderModule ret;
+    check!vkCreateShaderModule(logicalDevice, &createInfo, null, &ret);
+
+    return ret;
+}
+
+// window can't be a const* because glfwGetFrameBufferSize for some reason
+// doesn't take one?? Also means this function can't be pure...
+VkExtent2D SelectExtent(   GLFWwindow*              window,
+                        in VkSurfaceCapabilitiesKHR capabilities)
+{
+    // If width/height are set to 0xFFFFFFFF (UINT32_MAX) then the swapchain
+    // gets to set the size of the extent (vkspec page 1153).
+
+    if (capabilities.currentExtent.width != 0xFFFFFFFF)
+    {
+        // We're required to use the provided extent
+        return capabilities.currentExtent;
+    }
+
+    // We get to choose the size of the surface, so we use the closest to the
+    // size of the window as is valid.
+    debug log("We're doing the surface extent translation thing.");
+
+    int width, height;
+    glfwGetFramebufferSize(window, &width, &height);
+
+    import std.algorithm : clamp;
+
+    immutable minWidth  = capabilities.minImageExtent.width;
+    immutable maxWidth  = capabilities.maxImageExtent.width;
+    immutable minHeight = capabilities.minImageExtent.height;
+    immutable maxHeight = capabilities.maxImageExtent.height;
+
+    import std.conv : to;
+
+    VkExtent2D ret = {
+        width  :  width.clamp(minWidth,  maxWidth ).to!uint,
+        height : height.clamp(minHeight, maxHeight).to!uint,
+    };
+
+    return ret;
+}
+
+
+struct SwapchainSupportDetails
+{
+    VkSurfaceCapabilitiesKHR   capabilities;
+    VkSurfaceFormatKHR       []formats;
+    VkPresentModeKHR         []presentModes;
+
+    static SwapchainSupportDetails
+    Get(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface)
+    {
+        SwapchainSupportDetails ret;
+
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &ret.capabilities);
+
+        uint numFormats;
+        uint numPresentModes;
+
+        vkGetPhysicalDeviceSurfaceFormatsKHR     (physicalDevice, surface, &numFormats, null);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &numPresentModes, null);
+
+        ret.formats.length      = numFormats;
+        ret.presentModes.length = numPresentModes;
+
+        vkGetPhysicalDeviceSurfaceFormatsKHR     (physicalDevice, surface, &numFormats, ret.formats.ptr);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &numPresentModes, ret.presentModes.ptr);
+
+        return ret;
+    }
+}
+
+
+VkRenderPass CreateRenderPass(
+    VkDevice logicalDevice,
+    VkFormat colourFormat,
+    VkFormat depthFormat
+)
+{
+    VkAttachmentDescription colourAttachment = {
+        flags          : 0,
+        format         : colourFormat,
+        samples        : VK_SAMPLE_COUNT_1_BIT,
+        loadOp         : VK_ATTACHMENT_LOAD_OP_CLEAR,
+        // Clear image on load, so initialLayout doesn't matter
+        storeOp        : VK_ATTACHMENT_STORE_OP_STORE,
+        stencilLoadOp  : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        stencilStoreOp : VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        initialLayout  : VK_IMAGE_LAYOUT_UNDEFINED,
+        finalLayout    : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+
+    VkAttachmentReference colourAttachmentReference = {
+        attachment : 0,
+        layout     : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    debug log("Depth format is ", depthFormat);
+
+    auto depthAttachment = colourAttachment;
+    depthAttachment.format      = depthFormat;
+    depthAttachment.storeOp     = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference depthAttachmentReference = {
+        attachment : 1,
+        layout     : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
+    VkSubpassDescription subpass = {
+        pipelineBindPoint       : VK_PIPELINE_BIND_POINT_GRAPHICS,
+        colorAttachmentCount    : 1,
+        pColorAttachments       : &colourAttachmentReference,
+        pDepthStencilAttachment : &depthAttachmentReference,
+    };
+
+    VkSubpassDependency dependency = {
+        srcSubpass    : VK_SUBPASS_EXTERNAL,
+        dstSubpass    : 0,
+        srcStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        srcAccessMask : 0,
+        dstStageMask  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        dstAccessMask : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+    };
+
+    auto attachments = [colourAttachment, depthAttachment];
+
+    VkRenderPassCreateInfo createInfo = {
+        attachmentCount : attachments.GetLengthAsUint(),
+        pAttachments    : attachments.ptr,
+        subpassCount    : 1,
+        pSubpasses      : &subpass,
+        dependencyCount : 1,
+        pDependencies   : &dependency,
+    };
+
+    VkRenderPass ret;
+    check!vkCreateRenderPass(logicalDevice, &createInfo, null, &ret);
+
+    return ret;
+}
+
+/// Issue a command to update this buffer. NOTE: This cannot be performed
+/// during a render pass, according to the Vulkan spec
+void SendNewData(DataT)(
+    VkCommandBuffer cb,
+    Buffer!DataT    buffer,
+    DataT[]         data
+)
+    in (data.length != 0)
+    in (data.length * DataT.sizeof <= buffer.size)
+    in (buffer.size < 65536) // vkspec pp. 832
+{
+    immutable VkDeviceSize dataSize = (data.length * DataT.sizeof);
+    vkCmdUpdateBuffer(cb, buffer.buffer, 0, dataSize, data.ptr);
+}
+
+

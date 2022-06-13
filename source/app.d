@@ -122,17 +122,17 @@ void main() {
 
     // Create vertex buffer using those vertices
 
-    auto barrelVertexBuffer = renderer.createBuffer!Vertex(
+    auto barrelVertexBuffer = renderer.CreateBuffer!Vertex(
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ),
         vertices.length,
     );
 
-    barrelVertexBuffer.mapMemoryAndSetData(vertices);
+    barrelVertexBuffer.MapMemoryAndSetData(vertices);
     initialFrame.vertexBuffer[player] = barrelVertexBuffer;
 
-    foreach (i; 0 .. 990) {
+    foreach (i; 0 .. 100) {
         auto e = Entity.create();
 
         import std.random : uniform;
@@ -152,15 +152,17 @@ void main() {
     ---------------------------------------------------------------------------
     */
 
-    Frame thisFrame = game.tick(initialFrame, renderer);
 
-    import core.thread.osthread;
+    auto imageIndex = renderer.NextFrame();
+    Frame thisFrame = game.tick(initialFrame, renderer, imageIndex);
 
     while (!glfwWindowShouldClose(globals.window)) {
-        ++globals.frameNumber;
         renderer.render(thisFrame);
-        thisFrame = game.tick(thisFrame, renderer);
-        debug log("Frame ", globals.frameNumber);
+        imageIndex = renderer.NextFrame();
+        thisFrame = game.tick(thisFrame, renderer, imageIndex);
+
+        ++globals.frameNumber;
+        debug log("---- Next Frame ----");
     } // End of main loop
 
     log("Thanks for playing!");
