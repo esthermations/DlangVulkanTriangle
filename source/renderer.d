@@ -165,7 +165,7 @@ public:
     VkCommandPool         commandPool;
     Swapchain             swapchain;
 
-    enum RendererState { BetweenFrames, AcceptingCommands, ReadyToPresent };
+    enum RendererState { BetweenFrames, AcceptingCommands, ReadyToPresent }
     RendererState m_state = RendererState.BetweenFrames;
 
     /*
@@ -252,12 +252,15 @@ public:
 
         uint numRequiredLayersFound = 0;
 
-        foreach (requiredLayer; requiredLayers) {
-            foreach (layer; availableLayers) {
+        foreach (requiredLayer; requiredLayers)
+        {
+            foreach (layer; availableLayers)
+            {
                 immutable string layerName = layer.layerName.idup;
                 import core.stdc.string : strcmp;
 
-                if (strcmp(requiredLayer, layerName.ptr) == 0) {
+                if (strcmp(requiredLayer, layerName.ptr) == 0)
+                {
                     ++numRequiredLayersFound;
                     break;
                 }
@@ -268,10 +271,12 @@ public:
     }
 
     /// Initialise the renderer state, ready to render buffers!
-    void initialise(VkApplicationInfo appInfo,
-                    const(char)*[] requiredLayers,
-                    const(char)*[] requiredInstanceExtensions,
-                    const(char)*[] requiredDeviceExtensions)
+    void initialise(
+        VkApplicationInfo appInfo,
+        const(char)*[] requiredLayers,
+        const(char)*[] requiredInstanceExtensions,
+        const(char)*[] requiredDeviceExtensions
+    )
     {
         // Load initial set of Vulkan functions
 
@@ -289,7 +294,8 @@ public:
             uint count;
             auto glfwExtensions = glfwGetRequiredInstanceExtensions(&count);
 
-            foreach (i; 0 .. count) {
+            foreach (i; 0 .. count)
+            {
                 requiredInstanceExtensions ~= glfwExtensions[i];
             }
         }
@@ -428,11 +434,13 @@ public:
     VkDebugUtilsMessengerEXT createDebugMessenger()
     {
         extern (Windows) VkBool32
-        debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT      messageSeverity,
-                      VkDebugUtilsMessageTypeFlagsEXT             messageType,
-                      const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                      void*                                       pUserData)
-                      nothrow @nogc
+        debugCallback(
+            VkDebugUtilsMessageSeverityFlagBitsEXT      messageSeverity,
+            VkDebugUtilsMessageTypeFlagsEXT             messageType,
+            const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+            void*                                       pUserData
+        )
+            nothrow @nogc
         {
             import core.stdc.stdio : snprintf, puts, fflush, stdout;
             import std.string : format;
@@ -504,6 +512,7 @@ public:
         return ret;
     }
 
+
     VkImageView createImageView(VkDevice           logicalDevice,
                                 VkImage            image,
                                 VkFormat           format,
@@ -534,7 +543,9 @@ public:
         return ret;
     }
 
-    VkImageView[] createImageViewsForSwapchain(VkSwapchainKHR swapchain) {
+
+    VkImageView[] createImageViewsForSwapchain(VkSwapchainKHR swapchain)
+    {
         // Images
 
         uint numImages;
@@ -552,13 +563,14 @@ public:
         VkImageView[] ret;
         ret.length = images.length;
 
-        foreach(i, image; images) {
-            ret[i] = createImageView(
-                logicalDevice, image, format, VK_IMAGE_ASPECT_COLOR_BIT);
+        foreach(i, image; images)
+        {
+            ret[i] = createImageView(logicalDevice, image, format, VK_IMAGE_ASPECT_COLOR_BIT);
         }
 
         return ret;
     }
+
 
     struct Swapchain
     {
@@ -598,6 +610,7 @@ public:
         VkFence                 commandBufferReadyFence;
     }
 
+
     Swapchain createSwapchain()
     {
         Swapchain ret;
@@ -622,7 +635,7 @@ public:
         ret.framebuffers   = this.createFramebuffers(ret.imageViews, ret.depthResources.imageView, ret.renderPass);
 
         ret.uniformBuffers = this.createUniformBuffers(numImages);
-        ret.descriptorPool = this.createDescriptorPool(numImages);
+        ret.descriptorPool = this.createDescriptorPool(numImages, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
         ret.descriptorSets = this.createDescriptorSets(numImages, ret.descriptorPool, this.descriptorSetLayout, ret.uniformBuffers);
         ret.commandBuffers = this.createCommandBuffers(numImages);
         ret.imageAvailableSemaphore = this.createSemaphore();
@@ -631,6 +644,7 @@ public:
 
         return ret;
     }
+
 
     /// Clean up a swapchain and all its dependent items. There are a lot of them.
     /// The commandPool and pipelineLayout are NOT destroyed.
@@ -676,6 +690,7 @@ public:
         vkDestroyDescriptorPool(this.logicalDevice, sc.descriptorPool, null);
         vkDestroySwapchainKHR  (this.logicalDevice, sc.swapchain, null);
     }
+
 
     Swapchain recreateSwapchain()
     {
@@ -1221,9 +1236,10 @@ public:
         return 0;
     }
 
-    VkDescriptorPool createDescriptorPool(uint numDescriptors) {
+    VkDescriptorPool createDescriptorPool(uint numDescriptors, VkDescriptorType type)
+    {
         VkDescriptorPoolSize poolSize = {
-            type            : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            type            : type,
             descriptorCount : numDescriptors,
         };
 
@@ -1241,7 +1257,8 @@ public:
         return ret;
     }
 
-    struct DepthResources {
+    struct DepthResources
+    {
         VkImage        image;
         VkImageView    imageView;
         VkDeviceMemory memory;
@@ -1265,7 +1282,7 @@ public:
         };
 
         VkImage image;
-        check!vkCreateImage(logicalDevice, &createInfo, null, &image);
+        check!vkCreateImage(this.logicalDevice, &createInfo, null, &image);
 
         VkMemoryRequirements memoryRequirements;
         vkGetImageMemoryRequirements(this.logicalDevice, image, &memoryRequirements);
@@ -1278,7 +1295,7 @@ public:
 
         VkDeviceMemory memory;
         check!vkAllocateMemory(this.logicalDevice, &allocInfo, null, &memory);
-        vkBindImageMemory(logicalDevice, image, memory, 0);
+        check!vkBindImageMemory(this.logicalDevice, image, memory, 0);
 
         DepthResources ret = {
             image     : image,
@@ -1291,7 +1308,7 @@ public:
     }
 
     VkDescriptorSet[] createDescriptorSets(
-        uint count,
+        uint                  count,
         VkDescriptorPool      descriptorPool,
         VkDescriptorSetLayout descriptorSetLayout,
         UniformBuffer[]       uniformBuffers
@@ -1314,7 +1331,8 @@ public:
 
         check!vkAllocateDescriptorSets(this.logicalDevice, &allocInfo, ret.ptr);
 
-        foreach (i, set; ret) {
+        foreach (i, set; ret)
+        {
             VkDescriptorBufferInfo bufferInfo = {
                 buffer : uniformBuffers[i].buffer,
                 offset : 0,
