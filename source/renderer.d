@@ -789,8 +789,8 @@ public:
             pName  : "main",
         };
 
-        auto bindingDescription    = Vertex.getBindingDescription;
-        auto attributeDescriptions = Vertex.getAttributeDescription;
+        auto bindingDescription    = Vertex.GetBindingDescription;
+        auto attributeDescriptions = Vertex.GetAttributeDescription;
 
         VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo = {
             vertexBindingDescriptionCount   : 1,
