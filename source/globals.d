@@ -2,7 +2,6 @@ module globals;
 
 import glfw3.api;
 import erupted;
-import gl3n.linalg;
 
 import core.time;
 import std.concurrency : Tid, thisTid;

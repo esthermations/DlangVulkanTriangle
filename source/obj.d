@@ -5,14 +5,14 @@ module obj;
 */
 
 import std.exception : enforce;
-import gl3n.linalg;
+import std.experimental.logger : log;
 
-import util : log;
+import math;
 
 struct ObjData {
-    vec3[] positions;
-    vec3[] normals;
-    vec2[] texcoords;
+    v3[] positions;
+    v3[] normals;
+    v2[] texcoords;
 }
 
 ObjData parseObj(string objFilePath) {

@@ -2,30 +2,37 @@
 	"authors": [
 		"Esther O'Keefe"
 	],
+	"configurations": [
+		{
+			"buildOptions": [
+				"debugMode",
+				"debugInfoC"
+			],
+			"mainSourceFile": "source/app.d",
+			"name": "executable",
+			"preBuildCommands": [
+				"sh ./compileShaders.sh"
+			],
+			"targetType": "executable"
+		},
+		{
+			"excludedSourceFiles": [
+				"src/app.d"
+			],
+			"mainSourceFile": "source/tests.d",
+			"name": "unittest",
+			"targetType": "executable"
+		}
+	],
 	"copyright": "Copyright © 2022, Esther O'Keefe",
 	"dependencies": {
-		"glfw-d": "~>1.1.0",
 		"erupted": "~>2.1.9",
-		"gl3n": "~>1.4.1",
+		"gfm": "~>8.0.6",
+		"glfw-d": "~>1.1.0",
 		"mir-algorithm": "~>2.0.0",
-		"unit-threaded": "*"
+		"unit-threaded": "~>2.1.0"
 	},
 	"description": "Rendering a triangle in D with Vulkan",
 	"license": "GPL-3.0",
-	"name": "triangle",
-	"configurations": [
-		{
-			"name": "executable",
-			"targetType": "executable",
-			"mainSourceFile": "source/app.d",
-			"preBuildCommands": ["sh ./compileShaders.sh"],
-			"buildOptions": ["debugInfoC", "debugMode"]
-		},
-		{
-			"name": "unittest",
-			"targetType": "executable",
-			"mainSourceFile": "source/tests.d",
-			"excludedSourceFiles": ["src/app.d"]
-		}
-	]
+	"name": "triangle"
 }

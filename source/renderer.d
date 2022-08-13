@@ -3,16 +3,17 @@ module renderer;
 import std.conv : to;
 import std.exception : enforce;
 import std.typecons : Nullable;
-import std.stdio;
+import std.experimental.logger : log;
 
 import glfw3.api;
-import gl3n.linalg;
 import erupted;
 import erupted.vulkan_lib_loader;
 
 static import globals;
 import game;
+import math;
 import util;
+import ecs;
 
 
 struct BinarySemaphore
@@ -21,21 +22,21 @@ struct BinarySemaphore
         in (  !m_expectedToBeSignalled)
         out(;  m_expectedToBeSignalled)
     {
-        util.log("Semaphore ", m_semaphore, " was signalled");
+        log("Semaphore ", m_semaphore, " was signalled");
         m_expectedToBeSignalled = true;
     }
 
     void Wait()
         in (m_expectedToBeSignalled)
     {
-        util.log("Semaphore ", m_semaphore, " is being waited on.");
+        log("Semaphore ", m_semaphore, " is being waited on.");
     }
 
     void Unsignal()
         in (   m_expectedToBeSignalled)
         out(; !m_expectedToBeSignalled)
     {
-        util.log("Semaphore ", m_semaphore, " was unsignalled");
+        log("Semaphore ", m_semaphore, " was unsignalled");
         m_expectedToBeSignalled = false;
     }
 
@@ -1147,17 +1148,17 @@ public:
     {
         auto cb = this.swapchain.commandBuffers[imageIndex];
 
-        util.log("Waiting for commandBufferReadyFence");
+        log("Waiting for commandBufferReadyFence");
 
         // Wait for the command buffer to be ready (signalled by vkQueueSubmit)
         check!vkWaitForFences(this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence, false, ulong.max);
 
-        util.log("Finished waiting for commandBufferReadyFence");
+        log("Finished waiting for commandBufferReadyFence");
 
         // Reset the fence for next time
         check!vkResetFences  (this.logicalDevice, 1, &this.swapchain.commandBufferReadyFence);
 
-        util.log("Reset commandBufferReadyFence");
+        log("Reset commandBufferReadyFence");
 
         // Reset the command buffer, putting it in the Initial state
         check!vkResetCommandBuffer(cb, cast(VkCommandBufferResetFlags) 0);

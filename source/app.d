@@ -1,14 +1,16 @@
 import std.stdio;
 import std.exception;
+import std.experimental.logger;
 
 import erupted;
 import glfw3.api;
-import gl3n.linalg;
 
 static import globals;
 import util;
 import game;
 import renderer;
+import ecs;
+import math;
 
 
 void main() {
@@ -31,20 +33,20 @@ void main() {
         globals.farPlane
     );
 
-    auto player      = Entity.create();
-    auto camera      = Entity.create();
-    auto theStranger = Entity.create();
+    auto player      = Entity.Create();
+    auto camera      = Entity.Create();
+    auto theStranger = Entity.Create();
 
     {
         alias f = initialFrame;
 
-        f.position    [player]       = vec3(0);
+        f.position    [player]       = v3(0);
         f.scale       [player]       = Scale(1.0);
-        f.velocity    [player]       = vec3(0);
-        f.acceleration[player]       = vec3(0);
+        f.velocity    [player]       = v3(0);
+        f.acceleration[player]       = v3(0);
         f.controlledByPlayer[player] = true;
 
-        f.position          [camera] = vec3(0.0, 5.up, 5.backwards);
+        f.position          [camera] = v3(0.0, 5.up, 5.backwards);
         f.lookAtTargetEntity[camera] = player;
     }
 
@@ -133,7 +135,7 @@ void main() {
     initialFrame.vertexBuffer[player] = barrelVertexBuffer;
 
     foreach (i; 0 .. 100) {
-        auto e = Entity.create();
+        auto e = Entity.Create();
 
         import std.random : uniform;
 
@@ -142,7 +144,7 @@ void main() {
         float z = uniform(-10.0, 10.0);
 
         initialFrame.vertexBuffer[e] = barrelVertexBuffer;
-        initialFrame.position    [e] = vec3(x, y, z);
+        initialFrame.position    [e] = v3(x, y, z);
         initialFrame.scale       [e] = Scale(0.0 + 0.1 * (i % 5));
     }
 

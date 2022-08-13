@@ -3,7 +3,7 @@ module glfw_callbacks;
 import glfw3.api;
 static import globals;
 import game;
-import util : log;
+import std.experimental.logger : log;
 
 extern (C) nothrow @nogc:
 
