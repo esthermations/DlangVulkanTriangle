@@ -109,7 +109,7 @@ struct Vertex
     vec3 position; /// Model-space position of this vertex
     vec3 normal;   /// Vertex normal vector
 
-    static auto getBindingDescription()
+    static auto GetBindingDescription()
     {
         VkVertexInputBindingDescription ret = {
             binding   : 0,
@@ -119,11 +119,11 @@ struct Vertex
         return ret;
     }
 
-    static auto getAttributeDescription()
+    static auto GetAttributeDescription()
     {
         VkVertexInputAttributeDescription[2] ret = [
             {
-                binding : 0,
+                binding  : 0,
                 location : 0,
                 format   : VK_FORMAT_R32G32B32_SFLOAT,
                 offset   : Vertex.position.offsetof,
