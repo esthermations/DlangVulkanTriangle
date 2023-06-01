@@ -3,13 +3,20 @@ import std.experimental.logger : log;
 
 import math;
 
-void printMatrix(m4 mat, bool rowMajor = true)
+void printMatrix(bool rowMajor = true)(m4 mat)
 {
    foreach (i; 0 .. 4)
    {
       foreach (j; 0 .. 4)
       {
-         writef("\t%+.3f", rowMajor ? mat[j][i] : mat[i][j]);
+         static if (rowMajor)
+         {
+            writef("\t%+.3f", mat[j][i]);
+         }
+         else
+         {
+            writef("\t%+.3f", mat[i][j]);
+         }
       }
       writeln();
    }
@@ -18,7 +25,6 @@ void printMatrix(m4 mat, bool rowMajor = true)
 /**
     Utility functions for the game engine, currently mostly Vulkan-related.
 */
-
 enum Y_UP = +1.0f;
 enum Y_DOWN = -Y_UP;
 enum X_LEFT = -1.0f;
@@ -59,7 +65,7 @@ unittest
 
 bool approxEqual(m4 a, m4 b) pure
 {
-   immutable epsilon = 0.001;
+   immutable epsilon = 1e-4f;
    immutable absDiff = abs(a - b);
    foreach (i; 0 .. 4)
    {
@@ -81,10 +87,9 @@ unittest
 
 /// My own lookAt implementation, taking into account that GLM's matrices are
 /// stored row-major.
-m4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up)
+m4 lookAt(v3 cameraPosition, v3 targetPosition, v3 up)
 {
-
-   vec3 normalise(vec3 v) pure
+   v3 normalise(v3 v) pure
    {
       return v.normalized;
    }
@@ -110,7 +115,7 @@ m4 lookAt(vec3 cameraPosition, vec3 targetPosition, vec3 up)
 
 unittest
 {
-   immutable view = lookAt(vec3(2.0, 2.0, 2.0), vec3(0, 0, 0), vec3(0, 0, 1));
+   immutable view = lookAt(v3(2.0, 2.0, 2.0), v3(0, 0, 0), v3(0, 0, 1));
    immutable expected = m4(
       -0.707, -0.408, +0.577, +0.000,
       +0.707, -0.408, +0.577, +0.000,
@@ -122,7 +127,7 @@ unittest
 
 unittest
 {
-   immutable view = lookAt(vec3(0, 5, 0), vec3(0), vec3(1, 0, 0));
+   immutable view = lookAt(v3(0, 5, 0), v3(0), v3(1, 0, 0));
    immutable expected = m4(
       +0.000, +0.000, +1.000, -0.000,
       +1.000, +0.000, +0.000, -0.000,
@@ -241,7 +246,7 @@ string magenta(string s)
 // }
 
 auto check(alias func, ArgTypes...)(
-   auto ref ArgTypes args,// Grabbing the callsite information...
+   auto ref ArgTypes args, // Grabbing the callsite information...
    string callsiteFunction = __FUNCTION__,
    string callsiteFile = __FILE__,
    string callsitePrettyFunction = __PRETTY_FUNCTION__,
@@ -257,7 +262,7 @@ auto check(alias func, ArgTypes...)(
 }
 
 auto ref logWhileDoing(alias func, ArgTypes...)(
-   auto ref ArgTypes args,// Grabbing the callsite information...
+   auto ref ArgTypes args, // Grabbing the callsite information...
    string callsiteFunction = __FUNCTION__,
    string callsiteFile = __FILE__,
    string callsitePrettyFunction = __PRETTY_FUNCTION__,
@@ -280,8 +285,7 @@ auto ref logWhileDoing(alias func, ArgTypes...)(
 
 import std.range.primitives : isInputRange, isInfinite;
 
-bool containsDuplicates(T)(T sequence)
-   if (isInputRange!T && !isInfinite!T)
+bool containsDuplicates(T)(T sequence) if (isInputRange!T && !isInfinite!T)
 {
    import std.algorithm : sort, uniq;
    import std.range : walkLength;
@@ -315,10 +319,14 @@ unittest
 
       int opCmp(ref const Thing t) const
       {
-         if (this.x < t.x) return -1;
-         if (t.x > this.x) return +1;
-         if (this.y < t.y) return -1;
-         if (t.y > this.y) return +1;
+         if (this.x < t.x)
+            return -1;
+         if (t.x > this.x)
+            return +1;
+         if (this.y < t.y)
+            return -1;
+         if (t.y > this.y)
+            return +1;
          return 0;
       }
    }

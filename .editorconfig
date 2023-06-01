@@ -4,7 +4,7 @@ end_of_line = lf
 insert_final_newline = true
 
 [*.d]
-dfmt_align_switch_statements = false
+dfmt_align_switch_statements = true
 dfmt_brace_style = allman
 dfmt_single_indent = true
 dfmt_outdent_attributes = true

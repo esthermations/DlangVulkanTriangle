@@ -1,8 +1,8 @@
 module ecs;
 
-/**
- */
-public struct Entity
+alias FrameNumber = uint;
+
+struct Entity
 {
    public static Entity Create()
    {
@@ -17,22 +17,41 @@ public struct Entity
    static assert(Entity.sizeof == id.sizeof);
 }
 
-/**
- */
-public class Component(T)
+class Component(T)
 {
-   public ref T opIndex(Entity e)
+   public static alias Type = T;
+
+   public ref inout(T) opIndex(Entity e) inout
    {
       return m_Storage.require(e);
    }
 
+   public FrameNumber GetLastUpdated(in Entity e) inout
+   {
+      return m_LastUpdated[e];
+   }
+
+   private FrameNumber[Entity] m_LastUpdated;
    private T[Entity] m_Storage;
 }
 
-private unittest
+class System(components...) if (is(components[0] == Component))
 {
-   const e = Entity.Create;
-   auto health = new Component!int;
-   health[e] = 100;
-   assert(health[e] == 100);
+   private auto m_Comps = components.array;
+
+   this(void function() kernel)
+   {
+   }
+
+   public void Execute()
+   {
+   }
+}
+
+unittest
+{
+   //const e = Entity.Create;
+   //auto health = new Component!int;
+   //health[e] = 100;
+   //assert(health[e] == 100);
 }

@@ -1,6 +1,6 @@
 #/bin/sh
 
-GLSLC=glslc.exe
+GLSLC=glslc
 
 echo "Compiling shaders..." &&\
     echo "  $GLSLC" source/shader.vert -o source/vert.spv &&\

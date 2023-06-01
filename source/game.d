@@ -6,7 +6,7 @@ import std.exception : enforce;
 import std.parallelism : parallel;
 import std.experimental.logger : log;
 
-import glfw3.api;
+import bindbc.glfw;
 import erupted;
 
 static import globals;
@@ -137,7 +137,8 @@ Frame tick(Frame previousFrame, ref Renderer renderer, uint imageIndex)
       {
          auto scale = thisFrame.scale[e];
          auto position = thisFrame.position[e];
-         thisFrame.modelMatrix[e] = m4.identity.scaling(scale, scale, scale)
+         thisFrame.modelMatrix[e] = m4.identity
+            .scale(scale)
             .translate(position)
             .transposed();
       }
@@ -291,8 +292,8 @@ auto entitiesWithComponent(T)(T[Entity] map) pure
 
 unittest
 {
-   mat4[Entity] viewMatrix;
-   viewMatrix[Entity(50)] = mat4.identity;
+   m4[Entity] viewMatrix;
+   viewMatrix[Entity(50)] = m4.identity;
    auto ents = entitiesWithComponent(viewMatrix);
    assert(ents.length == 1);
    assert(ents[0] == Entity(50));

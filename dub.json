@@ -4,10 +4,6 @@
 	],
 	"configurations": [
 		{
-			"buildOptions": [
-				"debugMode",
-				"debugInfoC"
-			],
 			"mainSourceFile": "source/app.d",
 			"name": "executable",
 			"preBuildCommands": [
@@ -24,13 +20,11 @@
 			"targetType": "executable"
 		}
 	],
-	"copyright": "Copyright © 2022, Esther O'Keefe",
+	"copyright": "Copyright © 2023, Esther O'Keefe",
 	"dependencies": {
 		"erupted": "~>2.1.9",
-		"gfm": "~>8.0.6",
-		"glfw-d": "~>1.1.0",
-		"mir-algorithm": "~>2.0.0",
-		"unit-threaded": "~>2.1.0"
+		"bindbc-glfw": "~>1.0.1",
+		"unit-threaded": "~>2.1.6"
 	},
 	"description": "Rendering a triangle in D with Vulkan",
 	"license": "GPL-3.0",

@@ -1,6 +1,6 @@
 module glfw_callbacks;
 
-import glfw3.api;
+import bindbc.glfw;
 static import globals;
 import game;
 import std.experimental.logger : log;

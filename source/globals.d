@@ -1,6 +1,6 @@
 module globals;
 
-import glfw3.api;
+import bindbc.glfw;
 import erupted;
 
 import core.time;
