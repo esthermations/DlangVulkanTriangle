@@ -46,12 +46,9 @@ m4 abs(m4 m) pure
    import std.math : abs;
 
    m4 ret;
-   foreach (i; 0 .. 4)
+   foreach (i, ref x; m)
    {
-      foreach (j; 0 .. 4)
-      {
-         ret[i][j] = abs(m[i][j]);
-      }
+      ret[i] = abs(x);
    }
    return ret;
 }
@@ -63,27 +60,16 @@ unittest
    assert(result == m4(1));
 }
 
-bool approxEqual(m4 a, m4 b) pure
+bool approxEqual(in m4 a, in m4 b) pure
 {
    immutable epsilon = 1e-4f;
    immutable absDiff = abs(a - b);
-   foreach (i; 0 .. 4)
-   {
-      foreach (j; 0 .. 4)
-      {
-         if (absDiff[i][j] > epsilon)
-         {
-            return false;
-         }
-      }
-   }
-   return true;
+
+   import std.algorithm : all;
+   return absDiff[].all!(x => x < epsilon);
 }
 
-unittest
-{
-   assert(approxEqual(m4(1.0), m4(1.0001)));
-}
+unittest { assert(approxEqual(m4(1.0), m4(1.0001))); }
 
 /// My own lookAt implementation, taking into account that GLM's matrices are
 /// stored row-major.
@@ -103,13 +89,15 @@ m4 lookAt(v3 cameraPosition, v3 targetPosition, v3 up)
    //debug log("newUp  : ", newUp);
 
    return m4(
-      side.x, newUp.x, forward.x, 0.0,
-      side.y, newUp.y, forward.y, 0.0,
-      side.z, newUp.z, forward.z, 0.0,
-      -dot(cameraPosition, side),
-      -dot(cameraPosition, newUp),
-      -dot(cameraPosition, forward),
-      1.0,
+      [ side.x, newUp.x, forward.x, 0.0,
+        side.y, newUp.y, forward.y, 0.0,
+        side.z, newUp.z, forward.z, 0.0,
+
+        -dot(cameraPosition, side),
+        -dot(cameraPosition, newUp),
+        -dot(cameraPosition, forward),
+        1.0,
+      ]
    );
 }
 
@@ -139,17 +127,17 @@ unittest
 
 /// Don't use this one. Use the one that takes fovDegrees, below. This is
 /// correct but not really user-friendly.
-m4 perspective(float top, float bottom, float left, float right, float near, float far) pure @nogc nothrow
+pure m4 perspective(float top, float bottom, float left, float right, float near, float far) @nogc nothrow
 {
    immutable dx = right - left;
    immutable dy = top - bottom;
    immutable dz = far - near;
 
    m4 ret = m4(
-      2.0 * (near / dx), 0, (right + left) / dx, 0,
+      [2.0 * (near / dx), 0, (right + left) / dx, 0,
       0, 2.0 * (near / dy), (top + bottom) / dy, 0,
       0, 0, -(far + near) / dz, -2.0 * far * near / dz,
-      0, 0, -1, 0,
+      0, 0, -1, 0,]
    );
    return ret;
 }
@@ -158,7 +146,6 @@ m4 perspective(float top, float bottom, float left, float right, float near, flo
 T toRadians(T)(T degrees) pure @nogc nothrow
 {
    import std.math : PI;
-
    return (PI / 180.0) * degrees;
 }
 

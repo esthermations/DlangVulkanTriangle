@@ -137,10 +137,11 @@ Frame tick(Frame previousFrame, ref Renderer renderer, uint imageIndex)
       {
          auto scale = thisFrame.scale[e];
          auto position = thisFrame.position[e];
-         thisFrame.modelMatrix[e] = m4.identity
+         thisFrame.modelMatrix[e] =
+            m4.identity()
             .scale(scale)
-            .translate(position)
-            .transposed();
+            .translate(v4(position, 0))
+            .transpose();
       }
    }
 
@@ -235,7 +236,7 @@ Frame tick(Frame previousFrame, ref Renderer renderer, uint imageIndex)
 
       foreach (e; ents)
       {
-         v3 accel = v3(0);
+         v3 accel;
 
          if (thisFrame.actionRequested[GameAction.MOVE_FORWARDS])
          {

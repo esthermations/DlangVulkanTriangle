@@ -26,6 +26,8 @@
 		"bindbc-glfw": "~>1.0.1",
 		"unit-threaded": "~>2.1.6"
 	},
+	"libs": ["glfw3", "vulkan", "moltenvk"],
+	"versions": ["GLFW_33"],
 	"description": "Rendering a triangle in D with Vulkan",
 	"license": "GPL-3.0",
 	"name": "triangle"

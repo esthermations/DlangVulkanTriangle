@@ -4,9 +4,6 @@ import std.experimental.logger;
 static import std.concurrency;
 
 import erupted;
-import bindbc.glfw;
-
-mixin(bindGLFW_Vulkan);
 
 static import globals;
 import util;
@@ -14,6 +11,7 @@ import game;
 import renderer;
 import ecs;
 import math;
+import glfw_imports;
 
 void main()
 {
@@ -38,10 +36,10 @@ void main()
    {
       alias f = initialFrame;
 
-      f.position[player] = v3(0);
+      f.position[player] = v3();
       f.scale[player] = Scale(1.0);
-      f.velocity[player] = v3(0);
-      f.acceleration[player] = v3(0);
+      f.velocity[player] = v3();
+      f.acceleration[player] = v3();
       f.controlledByPlayer[player] = true;
 
       f.position[camera] = v3(0.0, 5.up, 5.backwards);
@@ -53,8 +51,8 @@ void main()
    const GLFWSupport glfwOk = loadGLFW();
    assert(glfwOk == glfwSupport);
 
-   const GLFWSupport glfwVulkanOk = loadGLFW_Vulkan();
-   assert(glfwVulkanOk == glfwSupport);
+   const auto glfwVulkanOk = loadGLFW_Vulkan();
+   assert(glfwVulkanOk);
 
    glfwInit();
    scope (exit)
@@ -105,6 +103,8 @@ void main()
       pApplicationName: "Hello Triangle",
       apiVersion: VK_MAKE_API_VERSION(0, 1, 1, 0),
    };
+
+   log("Calling renderer.initialise.");
 
    renderer.initialise(
       appInfo,

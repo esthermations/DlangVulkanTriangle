@@ -5,7 +5,7 @@ import std.exception : enforce;
 import std.typecons : Nullable;
 import std.experimental.logger : log;
 
-import bindbc.glfw;
+import glfw_imports;
 import erupted;
 import erupted.vulkan_lib_loader;
 
@@ -290,7 +290,7 @@ public:
       // Load initial set of Vulkan functions
 
       {
-         auto vulkanLoadedOkay = loadGlobalLevelFunctions;
+         auto vulkanLoadedOkay = loadGlobalLevelFunctions();
          enforce(vulkanLoadedOkay, "Failed to load Vulkan functions!");
       }
 
@@ -334,10 +334,8 @@ public:
 
       {
          // Can't really use check! here because we need to cast the result.
-         import bindbc.glfw : glfwCreateWindowSurface;
-
          auto errors = cast(erupted.VkResult) glfwCreateWindowSurface(
-            instance, globals.window, null, cast(ulong*)&this.surface);
+            instance, globals.window, null, &this.surface);
          assert(!errors);
       }
 
@@ -444,7 +442,7 @@ public:
 
    VkDebugUtilsMessengerEXT createDebugMessenger()
    {
-      extern (Windows) VkBool32 debugCallback(
+      extern (C) VkBool32 debugCallback(
          VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
          VkDebugUtilsMessageTypeFlagsEXT messageType,
          const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
