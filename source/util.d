@@ -32,33 +32,27 @@ enum X_RIGHT = -X_LEFT;
 enum Z_BACKWARDS = +1.0f;
 enum Z_FORWARDS = -Z_BACKWARDS;
 
-import std.math : fabs;
+import std.math : abs;
 
-immutable up = ((float f) => Y_UP * fabs(f));
-immutable down = ((float f) => Y_DOWN * fabs(f));
-immutable left = ((float f) => X_LEFT * fabs(f));
-immutable right = ((float f) => X_RIGHT * fabs(f));
-immutable forwards = ((float f) => Z_FORWARDS * fabs(f));
-immutable backwards = ((float f) => Z_BACKWARDS * fabs(f));
+enum up        = ((float f) => abs(f) * Y_UP);
+enum down      = ((float f) => abs(f) * Y_DOWN);
+enum left      = ((float f) => abs(f) * X_LEFT);
+enum right     = ((float f) => abs(f) * X_RIGHT);
+enum forwards  = ((float f) => abs(f) * Z_FORWARDS);
+enum backwards = ((float f) => abs(f) * Z_BACKWARDS);
 
-m4 abs(m4 m) pure
+pure auto abs(T, size_t Dim)(Matrix!(T, Dim) m)
 {
-   import std.math : abs;
-
    m4 ret;
-   foreach (i, ref x; m)
+   foreach (i, x; m)
    {
-      ret[i] = abs(x);
+      static import std.math;
+      ret[i] = std.math.abs(x);
    }
    return ret;
 }
 
-unittest
-{
-   m4 m = m4(-1);
-   m4 result = abs(m);
-   assert(result == m4(1));
-}
+unittest { assert(m4.filledWith(-1).abs() ==  m4.filledWith(1)); }
 
 bool approxEqual(in m4 a, in m4 b) pure
 {
@@ -69,7 +63,7 @@ bool approxEqual(in m4 a, in m4 b) pure
    return absDiff[].all!(x => x < epsilon);
 }
 
-unittest { assert(approxEqual(m4(1.0), m4(1.0001))); }
+unittest { assert(approxEqual(m4.filledWith(1), m4.filledWith(1.0001))); }
 
 /// My own lookAt implementation, taking into account that GLM's matrices are
 /// stored row-major.
@@ -115,13 +109,13 @@ unittest
 
 unittest
 {
-   immutable view = lookAt(v3(0, 5, 0), v3(0), v3(1, 0, 0));
+   immutable view = lookAt(v3(0, 5, 0), v3(), v3(1, 0, 0));
    immutable expected = m4(
       +0.000, +0.000, +1.000, -0.000,
       +1.000, +0.000, +0.000, -0.000,
       +0.000, +1.000, +0.000, -5.000,
       +0.000, +0.000, +0.000, +1.000,
-   ).transposed;
+   ).transpose();
    assert(approxEqual(view, expected));
 }
 
@@ -232,6 +226,14 @@ string magenta(string s)
 //    stderr.writeln("Frame ", globals.frameNumber, ": ", args);
 // }
 
+class VulkanError : Exception
+{
+   this(string msg, string file = __FILE__, size_t line = __LINE__)
+   {
+      super(msg, file, line);
+   }
+}
+
 auto check(alias func, ArgTypes...)(
    auto ref ArgTypes args, // Grabbing the callsite information...
    string callsiteFunction = __FUNCTION__,
@@ -244,7 +246,10 @@ auto check(alias func, ArgTypes...)(
    enum functionName = __traits(identifier, func);
    auto errors = func(args);
    debug log(functionName, " -> ", errors, " @ ", callsiteModule, ":", callsiteLine);
-   assert(!errors, "Non-success return code from Vulkan call: " ~ functionName);
+   if (errors)
+   {
+      throw new VulkanError("Non-success return code from Vulkan call: " ~ functionName);
+   }
    return errors;
 }
 

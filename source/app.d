@@ -49,10 +49,10 @@ void main()
    // Init GLFW
 
    const GLFWSupport glfwOk = loadGLFW();
-   assert(glfwOk == glfwSupport);
+   enforce(glfwOk == glfwSupport);
 
    const auto glfwVulkanOk = loadGLFW_Vulkan();
-   assert(glfwVulkanOk);
+   enforce(glfwVulkanOk);
 
    glfwInit();
    scope (exit)
@@ -106,12 +106,18 @@ void main()
 
    log("Calling renderer.initialise.");
 
-   renderer.initialise(
-      appInfo,
-      requiredLayers,
-      requiredInstanceExtensions,
-      requiredDeviceExtensions,
-   );
+   try {
+      renderer.initialise(
+         appInfo,
+         requiredLayers,
+         requiredInstanceExtensions,
+         requiredDeviceExtensions,
+      );
+   }
+   catch (VulkanError e)
+   {
+      writeln(e);
+   }
 
    debug log("Finished initialising renderer!");
 

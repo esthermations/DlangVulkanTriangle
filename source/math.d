@@ -104,6 +104,18 @@ struct Matrix(T, size_t Dimension)
 
    private alias Self = Matrix!(T, Dimension);
 
+   this(T[Dimension * Dimension] arr...)
+   {
+      this.data[] = arr[];
+   }
+
+   static auto filledWith(T value)
+   {
+      Self result;
+      result.data[] = value;
+      return result;
+   }
+
    static auto identity()
    {
       Self m;
